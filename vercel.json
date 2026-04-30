@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "installCommand": "pnpm install",
+  "buildCommand": "echo ok",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/$1"
+    }
+  ],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 120
+    },
+    "api/[...path].js": {
+      "maxDuration": 120
+    },
+    "api/internal/cron/refresh.js": {
+      "maxDuration": 120
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/internal/cron/refresh",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}
