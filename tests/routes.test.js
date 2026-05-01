@@ -74,11 +74,30 @@ describe('route()', () => {
     assert.equal(result.status, 400);
   });
 
+  it('returns 400 for LLM mentions bundle without siteId', async () => {
+    process.env.INTERNAL_API_TOKEN = 'test-token';
+    const req = makeRequest('GET', '/v1/llm-mentions/bundle');
+    const result = await route(req);
+    assert.equal(result.status, 400);
+  });
+
   it('returns 400 for gold dashboard without siteId before touching builders', async () => {
     process.env.INTERNAL_API_TOKEN = 'test-token';
     const req = makeRequest('GET', '/v1/dashboard/gold');
     const result = await route(req);
     assert.equal(result.status, 400);
+  });
+
+  it('returns 401 for dashboard bundle without token', async () => {
+    process.env.INTERNAL_API_TOKEN = 'test-token';
+    const req = makeRequest('GET', '/v1/dashboard/bundle');
+    req.headers.authorization = '';
+    try {
+      await route(req);
+      assert.fail('Should have thrown');
+    } catch (error) {
+      assert.equal(error.statusCode, 401);
+    }
   });
 
   it('serves DataForSEO locations metadata without requiring a site', async () => {

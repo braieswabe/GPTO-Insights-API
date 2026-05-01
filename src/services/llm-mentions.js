@@ -67,6 +67,27 @@ async function assertLlmSiteAccess(request, explicitSiteId = null) {
   return { siteId, portalScope, user };
 }
 
+async function timed(name, fn) {
+  const startedAt = Date.now();
+  try {
+    return { name, ok: true, value: await fn(), durationMs: Date.now() - startedAt };
+  } catch (error) {
+    return {
+      name,
+      ok: false,
+      value: null,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function requestWithSearchParams(request, searchParams) {
+  const url = new URL(request.url.toString());
+  url.search = searchParams.toString();
+  return { ...request, url };
+}
+
 export async function readLlmMentionsOverview(request) {
   const search = request.url.searchParams;
   if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
@@ -94,6 +115,61 @@ export async function readLlmMentionsOverview(request) {
     if (row) return ok(llmOverviewEnvelope(row, { queued: false, reason: 'build_failed', jobId: null }));
     return ok(llmOverviewEnvelope(null, { queued: false, reason: 'build_failed', jobId: null }));
   }
+}
+
+export async function readLlmMentionsBundle(request) {
+  const search = request.url.searchParams;
+  if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  const { siteId } = await assertLlmSiteAccess(request);
+  const days = parsePositiveInt(search.get('days'), search.get('range') === '30d' ? 30 : 7, { min: 1, max: 90 });
+  const source = search.get('source') || 'chat_gpt';
+  const bundleSearch = new URLSearchParams(search);
+  if (!bundleSearch.get('days')) bundleSearch.set('days', String(days));
+  const bundleRequest = requestWithSearchParams(request, bundleSearch);
+
+  const sections = await Promise.all([
+    timed('overview', () => readLlmMentionsOverview(bundleRequest)),
+    timed('legacy', () => buildLegacyLlmMentionsResponse(bundleSearch)),
+    timed('trends', () => buildLlmMentionsTrends({ siteId, source, days, rollupType: search.get('rollupType') || 'summary' })),
+    timed('competitors', () => buildLlmMentionsCompetitors({ siteId, source })),
+    timed('promptIntelligence', () => buildLlmMentionsPromptIntelligence({ siteId, source })),
+    timed('sourceGap', () => buildLlmMentionsSourceGap({ siteId, source })),
+    timed('aggregated', () => buildLlmEndpointResponse('aggregated', bundleSearch)),
+    timed('topPages', () => buildLlmEndpointResponse('top-pages', bundleSearch)),
+    timed('topDomains', () => buildLlmEndpointResponse('top-domains', bundleSearch)),
+    timed('search', () => buildLlmEndpointResponse('search', bundleSearch)),
+  ]);
+
+  const byName = Object.fromEntries(sections.map((section) => [section.name, section]));
+  const overview = byName.overview.value?.body || {};
+  return ok({
+    data: {
+      llmMentions: {
+        overview: overview.data || null,
+        summary: byName.legacy.value || null,
+        trends: byName.trends.value || null,
+        competitors: byName.competitors.value || null,
+        promptIntelligence: byName.promptIntelligence.value || null,
+        sourceGap: byName.sourceGap.value || null,
+        endpoints: {
+          aggregated: byName.aggregated.value || null,
+          topPages: byName.topPages.value || null,
+          topDomains: byName.topDomains.value || null,
+          search: byName.search.value || null,
+        },
+      },
+      timings: sections.map(({ name, ok: sectionOk, durationMs, error }) => ({ name, ok: sectionOk, durationMs, error })),
+    },
+    freshness: {
+      llm_mentions_bundle: { ...computedFreshness(), stale: Boolean(overview.stale) },
+      ...(overview.freshness || {}),
+    },
+    generatedAt: new Date().toISOString(),
+    stale: Boolean(overview.stale),
+    refreshQueued: Boolean(overview.refreshQueued),
+    refreshQueueReason: overview.refreshQueueReason || null,
+    jobId: overview.jobId || null,
+  });
 }
 
 export async function readLegacyLlmMentions(request) {

@@ -32,11 +32,14 @@ The server starts at `http://127.0.0.1:4011`.
 ### Dashboard Read (cache-first)
 
 - `GET /v1/dashboard/overview` – full aggregated dashboard
+- `GET /v1/dashboard/bundle` – page-ready dashboard bundle for GPTO Suite
+- `GET /v1/dashboard/report-bundle` – report/export/AI-report source bundle
 - `GET /v1/dashboard/module/:moduleKey` – single module data
 - `GET /v1/dashboard/gold` – client-facing Gold dashboard payload
 - `GET /v1/dashboard/stats` – dashboard stats payload
 - `GET /v1/dashboard/export-data` – consolidated export/report source data
 - `GET /v1/llm-mentions/overview` – LLM mentions aggregation
+- `GET /v1/llm-mentions/bundle` – page-ready LLM Mentions bundle
 - `GET /v1/llm-mentions` – legacy GPTO-compatible LLM summary payload
 - `GET /v1/llm-mentions/trends` – LLM mentions trend data
 - `GET /v1/llm-mentions/competitors` – competitor comparison

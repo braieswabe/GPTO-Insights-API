@@ -4,10 +4,12 @@ import { buildSiteConfig, buildSitesList } from './builders/sites.js';
 import {
   processRefreshJobs,
   prewarmDashboard,
+  readDashboardBundle,
   readDashboardExportData,
   readDashboardGold,
   readDashboardModule,
   readDashboardOverview,
+  readDashboardReportBundle,
   readDashboardStats,
   refreshDashboard,
   runDashboardCronRefresh,
@@ -17,6 +19,7 @@ import {
   readLegacyLlmMentions,
   readLlmCompetitors,
   readLlmEndpoint,
+  readLlmMentionsBundle,
   readLlmMentionsOverview,
   readLlmTrends,
   readPromptIntelligence,
@@ -57,6 +60,8 @@ export async function route(request) {
   }
 
   if (method === 'GET' && url.pathname === '/v1/dashboard/overview') return readDashboardOverview(request);
+  if (method === 'GET' && url.pathname === '/v1/dashboard/bundle') return readDashboardBundle(request);
+  if (method === 'GET' && url.pathname === '/v1/dashboard/report-bundle') return readDashboardReportBundle(request);
   const moduleMatch = url.pathname.match(/^\/v1\/dashboard\/module\/([^/]+)$/);
   if (method === 'GET' && moduleMatch) return readDashboardModule(request, moduleMatch[1]);
   if (method === 'GET' && url.pathname === '/v1/dashboard/gold') return readDashboardGold(request);
@@ -64,6 +69,7 @@ export async function route(request) {
   if (method === 'GET' && url.pathname === '/v1/dashboard/export-data') return readDashboardExportData(request);
 
   if (method === 'GET' && url.pathname === '/v1/llm-mentions/overview') return readLlmMentionsOverview(request);
+  if (method === 'GET' && url.pathname === '/v1/llm-mentions/bundle') return readLlmMentionsBundle(request);
   if (method === 'GET' && url.pathname === '/v1/llm-mentions') return readLegacyLlmMentions(request);
   if (method === 'GET' && url.pathname === '/v1/llm-mentions/trends') return readLlmTrends(request);
   if (method === 'GET' && url.pathname === '/v1/llm-mentions/competitors') return readLlmCompetitors(request);

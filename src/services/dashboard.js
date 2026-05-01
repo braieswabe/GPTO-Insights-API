@@ -5,6 +5,8 @@ import { claimRefreshJobs, completeRefreshJob, enqueueRefreshJob } from '../jobs
 import { DEFAULT_LLM_MENTION_SOURCES, computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
 import { buildDashboardOverview, buildModule, buildLlmMentionsOverview } from '../builders/index.js';
 import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
+import { buildSiteConfig } from '../builders/sites.js';
+import { readLegacyLlmMentions, readLlmCompetitors, readSourceGap } from './llm-mentions.js';
 import { DASHBOARD_MODULES, EMPTY_SITE_UUID, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays, ttlForModule } from '../types.js';
 
 const DASHBOARD_PREWARM_RANGES = ['7d', '30d'];
@@ -77,6 +79,46 @@ async function enqueueIfStale(row, identity, request) {
 
 function requestContext(request) {
   return request || { headers: {} };
+}
+
+async function timed(name, fn) {
+  const startedAt = Date.now();
+  try {
+    return { name, ok: true, value: await fn(), durationMs: Date.now() - startedAt };
+  } catch (error) {
+    return {
+      name,
+      ok: false,
+      value: null,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function requestWithSearchParams(request, searchParams) {
+  const url = new URL(request.url.toString());
+  url.search = searchParams.toString();
+  return { ...request, url };
+}
+
+function bundleResponse({ key, data, freshness = {}, timings = [], stale = false, refreshQueued = false, jobId = null }) {
+  const generatedAt = new Date().toISOString();
+  return ok({
+    data: { ...data, timings },
+    freshness: {
+      [key]: {
+        ...computedFreshness(),
+        stale,
+      },
+      ...freshness,
+    },
+    generatedAt,
+    stale,
+    refreshQueued,
+    refreshQueueReason: refreshQueued ? 'section_refresh_queued' : null,
+    jobId,
+  });
 }
 
 async function readCachedEnvelope({ request, identity, moduleKey, fallback, compute }) {
@@ -238,6 +280,68 @@ export async function readDashboardExportData(request) {
     moduleKey: 'export_data',
     compute: () => buildExportData(context),
   }));
+}
+
+export async function readDashboardBundle(request) {
+  const context = parseDashboardContext(request);
+  await assertSiteAccess(context);
+
+  const [overviewResult, statsResult] = await Promise.all([
+    timed('overview', () => readDashboardOverview(request)),
+    timed('stats', () => readDashboardStats(request)),
+  ]);
+
+  if (overviewResult.value?.status && overviewResult.value.status !== 200) return overviewResult.value;
+
+  const overviewBody = overviewResult.value?.body || {};
+  const statsBody = statsResult.value?.body || null;
+  return bundleResponse({
+    key: 'dashboard_bundle',
+    data: {
+      dashboard: overviewBody.data || emptyDashboardOverview(),
+      stats: statsBody,
+      llmMentions: overviewBody.data?.llmMentions || null,
+    },
+    freshness: overviewBody.freshness || {},
+    timings: [overviewResult, statsResult].map(({ name, ok: sectionOk, durationMs, error }) => ({ name, ok: sectionOk, durationMs, error })),
+    stale: Boolean(overviewBody.stale),
+    refreshQueued: Boolean(overviewBody.refreshQueued),
+    jobId: overviewBody.jobId || null,
+  });
+}
+
+export async function readDashboardReportBundle(request) {
+  const context = parseDashboardContext(request);
+  await assertSiteAccess(context);
+  const reportSearch = new URLSearchParams(request.url.searchParams);
+  if (!reportSearch.get('days')) reportSearch.set('days', String(rangeToDays(context.rangeKey)));
+  const reportRequest = requestWithSearchParams(request, reportSearch);
+
+  const tasks = [
+    timed('exportData', () => readDashboardExportData(request)),
+    context.siteId ? timed('siteDetail', () => buildSiteConfig(context.siteId)) : Promise.resolve({ name: 'siteDetail', ok: true, value: null, durationMs: 0 }),
+    context.siteId ? timed('llmMentions', () => readLegacyLlmMentions(reportRequest)) : Promise.resolve({ name: 'llmMentions', ok: true, value: null, durationMs: 0 }),
+    context.siteId ? timed('llmSourceGap', () => readSourceGap(reportRequest)) : Promise.resolve({ name: 'llmSourceGap', ok: true, value: null, durationMs: 0 }),
+    context.siteId ? timed('llmCompetitors', () => readLlmCompetitors(reportRequest)) : Promise.resolve({ name: 'llmCompetitors', ok: true, value: null, durationMs: 0 }),
+  ];
+  const [exportData, siteDetail, llmMentions, llmSourceGap, llmCompetitors] = await Promise.all(tasks);
+  if (exportData.value?.status && exportData.value.status !== 200) return exportData.value;
+
+  const report = exportData.value?.body || {};
+  return bundleResponse({
+    key: 'dashboard_report_bundle',
+    data: {
+      report: {
+        ...report,
+        siteDetail: siteDetail.value || null,
+        llmMentions: llmMentions.value?.body || report.llmMentions || null,
+        llmMentionsSourceGap: llmSourceGap.value?.body || null,
+        llmMentionsCompetitors: llmCompetitors.value?.body || null,
+      },
+    },
+    timings: [exportData, siteDetail, llmMentions, llmSourceGap, llmCompetitors].map(({ name, ok: sectionOk, durationMs, error }) => ({ name, ok: sectionOk, durationMs, error })),
+    stale: false,
+  });
 }
 
 async function listActiveDashboardSites() {
