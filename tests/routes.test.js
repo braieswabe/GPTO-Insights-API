@@ -73,4 +73,23 @@ describe('route()', () => {
     const result = await route(req);
     assert.equal(result.status, 400);
   });
+
+  it('returns 400 for gold dashboard without siteId before touching builders', async () => {
+    process.env.INTERNAL_API_TOKEN = 'test-token';
+    const req = makeRequest('GET', '/v1/dashboard/gold');
+    const result = await route(req);
+    assert.equal(result.status, 400);
+  });
+
+  it('serves DataForSEO locations metadata without requiring a site', async () => {
+    process.env.INTERNAL_API_TOKEN = 'test-token';
+    const req = makeRequest('POST', '/v1/llm-mentions/raw', {
+      body: JSON.stringify({ endpoint: 'locations_and_languages' }),
+      headers: { 'content-type': 'application/json' },
+    });
+    const result = await route(req);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.status_code, 20000);
+    assert.ok(result.body.data.tasks[0].result.length > 0);
+  });
 });

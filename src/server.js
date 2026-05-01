@@ -8,7 +8,7 @@ loadEnv();
 const port = Number(process.env.PORT || 4011);
 const host = process.env.HOST || '127.0.0.1';
 
-export const server = http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   let request = null;
   try {
     request = await parseRequest(req);
@@ -23,6 +23,8 @@ export const server = http.createServer(async (req, res) => {
     sendError(res, error, request);
   }
 });
+
+export default server;
 
 if (process.argv[1] && process.argv[1].endsWith('/server.js')) {
   server.listen(port, host, () => {

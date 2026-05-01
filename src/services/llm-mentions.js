@@ -1,0 +1,178 @@
+import { assertSiteAccess, getUserContext } from '../access.js';
+import { buildCacheIdentity, getCacheRow, isCacheStale, serializeCacheRow, upsertCacheRow } from '../cache.js';
+import { computedFreshness, normalizeSources, ok, parsePositiveInt, requireSiteId, responseEnvelope } from '../contracts.js';
+import { ttlForModule, normalizePortal } from '../types.js';
+import {
+  buildLegacyLlmMentionsResponse,
+  buildLlmEndpointResponse,
+  createTrackedPrompt,
+  deleteTrackedPrompt,
+  getTrackedPromptSiteId,
+  listRawSnapshots,
+  listTrackedPrompts,
+  runPromptRefresh,
+  runRawRequest,
+  updateTrackedPrompt,
+} from '../builders/llm-admin.js';
+import {
+  buildLlmMentionsCompetitors,
+  buildLlmMentionsOverview,
+  buildLlmMentionsPromptIntelligence,
+  buildLlmMentionsSourceGap,
+  buildLlmMentionsTrends,
+} from '../builders/llm-mentions.js';
+
+function llmOverviewEnvelope(row, refresh) {
+  const serialized = serializeCacheRow(row);
+  const freshness = serialized?.metadata || {
+    status: 'missing',
+    generatedAt: null,
+    sourceWatermarkAt: null,
+    expiresAt: null,
+    stale: true,
+    error: null,
+  };
+  const payload = serialized?.payload || null;
+  const sourceRows = payload?.summary?.platformBreakdown || [];
+  const sources = {};
+  for (const item of sourceRows) {
+    if (item?.source) sources[item.source] = item;
+  }
+  return responseEnvelope({
+    key: 'llm_mentions_overview',
+    data: { sources, combined: payload },
+    freshness,
+    stale: !row || isCacheStale(row),
+    refresh,
+    generatedAt: freshness.generatedAt,
+  });
+}
+
+async function assertLlmSiteAccess(request, explicitSiteId = null) {
+  const siteId = requireSiteId(explicitSiteId || request.url.searchParams);
+  const portalScope = normalizePortal(request.url.searchParams.get('portal'));
+  const user = getUserContext(request);
+  await assertSiteAccess({ siteId, portalScope, user });
+  return { siteId, portalScope, user };
+}
+
+export async function readLlmMentionsOverview(request) {
+  const search = request.url.searchParams;
+  if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  const { siteId, portalScope } = await assertLlmSiteAccess(request);
+  const days = parsePositiveInt(search.get('days'), 7, { min: 1, max: 90 });
+  const sources = normalizeSources(search.get('sources'));
+  const rangeKey = `${days}d`;
+  const identity = buildCacheIdentity({ portalScope, moduleKey: 'llm_mentions_overview', siteId, rangeKey, params: { days, sources } });
+  const row = await getCacheRow(identity);
+  if (row && !isCacheStale(row)) return ok(llmOverviewEnvelope(row, null));
+
+  try {
+    const payload = await buildLlmMentionsOverview({ siteId, days, sources });
+    upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule('llm_mentions_overview') }).catch(() => {});
+    return ok(responseEnvelope({
+      key: 'llm_mentions_overview',
+      data: { sources: {}, combined: payload },
+      freshness: computedFreshness(),
+    }));
+  } catch (error) {
+    console.error('buildLlmMentionsOverview failed:', error?.message || error);
+    if (row) return ok(llmOverviewEnvelope(row, { queued: false, reason: 'build_failed', jobId: null }));
+    return ok(llmOverviewEnvelope(null, { queued: false, reason: 'build_failed', jobId: null }));
+  }
+}
+
+export async function readLegacyLlmMentions(request) {
+  if (!request.url.searchParams.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  await assertLlmSiteAccess(request);
+  return ok(await buildLegacyLlmMentionsResponse(request.url.searchParams));
+}
+
+export async function readLlmEndpoint(request, endpoint) {
+  if (!request.url.searchParams.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  await assertLlmSiteAccess(request);
+  return ok(await buildLlmEndpointResponse(endpoint, request.url.searchParams));
+}
+
+export async function readLlmTrends(request) {
+  const search = request.url.searchParams;
+  if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  const { siteId } = await assertLlmSiteAccess(request);
+  return ok(await buildLlmMentionsTrends({
+    siteId,
+    source: search.get('source') || 'chat_gpt',
+    days: parsePositiveInt(search.get('days'), 7, { min: 1, max: 90 }),
+    rollupType: search.get('rollupType') || 'summary',
+  }));
+}
+
+export async function readLlmCompetitors(request) {
+  const search = request.url.searchParams;
+  if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  const { siteId } = await assertLlmSiteAccess(request);
+  return ok(await buildLlmMentionsCompetitors({ siteId, source: search.get('source') || 'chat_gpt' }));
+}
+
+export async function readPromptIntelligence(request) {
+  const search = request.url.searchParams;
+  if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  const { siteId } = await assertLlmSiteAccess(request);
+  return ok(await buildLlmMentionsPromptIntelligence({ siteId, source: search.get('source') || 'chat_gpt' }));
+}
+
+export async function readSourceGap(request) {
+  const search = request.url.searchParams;
+  if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
+  const { siteId } = await assertLlmSiteAccess(request);
+  return ok(await buildLlmMentionsSourceGap({ siteId, source: search.get('source') || 'chat_gpt' }));
+}
+
+export async function readRawSnapshots(request) {
+  if (request.url.searchParams.get('siteId')) await assertLlmSiteAccess(request);
+  return ok(await listRawSnapshots(request.url.searchParams));
+}
+
+export async function writeRawRequest(request, body) {
+  if (body.siteId) await assertLlmSiteAccess(request, body.siteId);
+  return ok(await runRawRequest(body, request.url.searchParams));
+}
+
+export async function refreshPrompts(request) {
+  await assertLlmSiteAccess(request);
+  return ok(await runPromptRefresh(request.url.searchParams));
+}
+
+export async function readTrackedPrompts(request) {
+  await assertLlmSiteAccess(request);
+  return ok(await listTrackedPrompts(request.url.searchParams));
+}
+
+export async function writeTrackedPrompt(request, body) {
+  await assertLlmSiteAccess(request, body.siteId);
+  return ok(await createTrackedPrompt(body));
+}
+
+export async function patchTrackedPrompt(request, id, body) {
+  await assertLlmSiteAccess(request, await getTrackedPromptSiteId(id));
+  return ok(await updateTrackedPrompt(id, body));
+}
+
+export async function removeTrackedPrompt(request, id) {
+  await assertLlmSiteAccess(request, await getTrackedPromptSiteId(id));
+  return ok(await deleteTrackedPrompt(id));
+}
+
+export async function refreshLlmMentions(request, body) {
+  const siteId = body.siteId;
+  if (!siteId) return { status: 400, body: { error: 'siteId is required' } };
+  const portalScope = normalizePortal(body.portalScope || body.portal);
+  const user = getUserContext(request);
+  await assertSiteAccess({ siteId, portalScope, user });
+
+  const sources = normalizeSources(body.sources);
+  const days = parsePositiveInt(body.days, 7, { min: 1, max: 90 });
+  const payload = await buildLlmMentionsOverview({ siteId, days, sources });
+  const identity = buildCacheIdentity({ portalScope, moduleKey: 'llm_mentions_overview', siteId, rangeKey: `${days}d`, params: { days, sources } });
+  await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule('llm_mentions_overview') });
+  return ok({ ok: true, siteId, sources });
+}

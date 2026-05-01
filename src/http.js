@@ -22,7 +22,7 @@ export function corsHeaders(request) {
   const headers = { vary: 'Origin' };
   if (origin && allowed.includes(origin)) {
     headers['access-control-allow-origin'] = origin;
-    headers['access-control-allow-methods'] = 'GET,POST,HEAD,OPTIONS';
+    headers['access-control-allow-methods'] = 'GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS';
     headers['access-control-allow-headers'] =
       'Authorization,Content-Type,x-gpto-user-id,x-gpto-user-role,x-gpto-tenant-id';
   }
