@@ -1,6 +1,7 @@
 import { assertSiteAccess, getUserContext } from '../access.js';
 import { buildCacheIdentity, getCacheRow, isCacheStale, serializeCacheRow, upsertCacheRow } from '../cache.js';
 import { computedFreshness, normalizeSources, ok, parsePositiveInt, requireSiteId, responseEnvelope } from '../contracts.js';
+import { enqueueRefreshJob } from '../jobs.js';
 import { ttlForModule, normalizePortal } from '../types.js';
 import {
   buildLegacyLlmMentionsResponse,
@@ -48,6 +49,16 @@ function llmOverviewEnvelope(row, refresh) {
   });
 }
 
+async function enqueueLlmOverviewRefresh(row, identity, user) {
+  if (row && !isCacheStale(row)) return { queued: false, reason: 'fresh_cache', jobId: null };
+  try {
+    return await enqueueRefreshJob(identity, { requestedBy: user?.userId || null, priority: row ? 0 : 5 });
+  } catch (error) {
+    console.error('enqueue LLM overview refresh failed (non-fatal):', error?.message || error);
+    return { queued: false, reason: 'enqueue_error', jobId: null };
+  }
+}
+
 async function assertLlmSiteAccess(request, explicitSiteId = null) {
   const siteId = requireSiteId(explicitSiteId || request.url.searchParams);
   const portalScope = normalizePortal(request.url.searchParams.get('portal'));
@@ -59,17 +70,20 @@ async function assertLlmSiteAccess(request, explicitSiteId = null) {
 export async function readLlmMentionsOverview(request) {
   const search = request.url.searchParams;
   if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
-  const { siteId, portalScope } = await assertLlmSiteAccess(request);
+  const { siteId, portalScope, user } = await assertLlmSiteAccess(request);
   const days = parsePositiveInt(search.get('days'), 7, { min: 1, max: 90 });
   const sources = normalizeSources(search.get('sources'));
   const rangeKey = `${days}d`;
   const identity = buildCacheIdentity({ portalScope, moduleKey: 'llm_mentions_overview', siteId, rangeKey, params: { days, sources } });
   const row = await getCacheRow(identity);
-  if (row && !isCacheStale(row)) return ok(llmOverviewEnvelope(row, null));
+  if (row) {
+    const refresh = isCacheStale(row) ? await enqueueLlmOverviewRefresh(row, identity, user) : null;
+    return ok(llmOverviewEnvelope(row, refresh));
+  }
 
   try {
     const payload = await buildLlmMentionsOverview({ siteId, days, sources });
-    upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule('llm_mentions_overview') }).catch(() => {});
+    await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule('llm_mentions_overview') });
     return ok(responseEnvelope({
       key: 'llm_mentions_overview',
       data: { sources: {}, combined: payload },

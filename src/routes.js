@@ -3,12 +3,14 @@ import { readJson } from './http.js';
 import { buildSiteConfig, buildSitesList } from './builders/sites.js';
 import {
   processRefreshJobs,
+  prewarmDashboard,
   readDashboardExportData,
   readDashboardGold,
   readDashboardModule,
   readDashboardOverview,
   readDashboardStats,
   refreshDashboard,
+  runDashboardCronRefresh,
 } from './services/dashboard.js';
 import {
   patchTrackedPrompt,
@@ -87,9 +89,10 @@ export async function route(request) {
 
   if (method === 'POST' && url.pathname === '/internal/refresh/dashboard') return refreshDashboard(request, await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/llm-mentions') return refreshLlmMentions(request, await readJson(request));
+  if (method === 'POST' && url.pathname === '/internal/refresh/prewarm') return prewarmDashboard(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/process') return processRefreshJobs(await readJson(request));
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/refresh') {
-    return processRefreshJobs(method === 'POST' ? await readJson(request) : {});
+    return runDashboardCronRefresh(method === 'POST' ? await readJson(request) : {});
   }
 
   return { status: 404, body: { error: 'Not found' } };

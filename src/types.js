@@ -31,10 +31,25 @@ export const MODULE_TTL_SECONDS = {
   experience: 30 * 60,
   ai_readability: 60 * 60,
   llm_mentions_overview: 6 * 60 * 60,
+  gold: 30 * 60,
+  stats: 15 * 60,
+  export_data: 30 * 60,
 };
 
+export const DASHBOARD_MODULE_ALIASES = {
+  'search-diagnostics': 'search_diagnostics',
+  'executive-summary': 'executive_summary',
+  'ai-readability': 'ai_readability',
+  'llm-mentions-overview': 'llm_mentions_overview',
+};
+
+export function normalizeDashboardModuleKey(value) {
+  const key = String(value || '').trim();
+  return DASHBOARD_MODULE_ALIASES[key] || key;
+}
+
 export function ttlForModule(moduleKey) {
-  return MODULE_TTL_SECONDS[moduleKey] || 30 * 60;
+  return MODULE_TTL_SECONDS[normalizeDashboardModuleKey(moduleKey)] || 30 * 60;
 }
 
 export function normalizePortal(value) {

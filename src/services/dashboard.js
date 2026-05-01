@@ -1,10 +1,14 @@
 import { assertSiteAccess, getUserContext } from '../access.js';
 import { buildCacheIdentity, getCacheRow, isCacheStale, serializeCacheRow, upsertCacheRow } from '../cache.js';
+import { db } from '../db.js';
 import { claimRefreshJobs, completeRefreshJob, enqueueRefreshJob } from '../jobs.js';
-import { computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
+import { DEFAULT_LLM_MENTION_SOURCES, computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
 import { buildDashboardOverview, buildModule, buildLlmMentionsOverview } from '../builders/index.js';
 import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
-import { DASHBOARD_MODULES, normalizePortal, normalizeRange, rangeToDays, ttlForModule } from '../types.js';
+import { DASHBOARD_MODULES, EMPTY_SITE_UUID, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays, ttlForModule } from '../types.js';
+
+const DASHBOARD_PREWARM_RANGES = ['7d', '30d'];
+const DASHBOARD_PREWARM_PORTALS = ['admin', 'employee'];
 
 export function emptyDashboardOverview() {
   return {
@@ -48,6 +52,18 @@ function cacheIdentity({ portalScope, moduleKey, siteId, rangeKey, params = {} }
   return buildCacheIdentity({ portalScope, moduleKey, siteId, rangeKey, params });
 }
 
+function payloadFreshness(savedRow) {
+  return serializeCacheRow(savedRow)?.metadata || computedFreshness();
+}
+
+export function shouldServeCachedDashboardRow(row) {
+  return Boolean(row);
+}
+
+export function shouldQueueDashboardRefresh(row) {
+  return Boolean(row && isCacheStale(row));
+}
+
 async function enqueueIfStale(row, identity, request) {
   if (row && !isCacheStale(row)) return { queued: false, reason: 'fresh_cache', jobId: null };
   try {
@@ -57,6 +73,85 @@ async function enqueueIfStale(row, identity, request) {
     console.error('enqueueRefreshJob failed (non-fatal):', error?.message || error);
     return { queued: false, reason: 'enqueue_error', jobId: null };
   }
+}
+
+function requestContext(request) {
+  return request || { headers: {} };
+}
+
+async function readCachedEnvelope({ request, identity, moduleKey, fallback, compute }) {
+  const row = await getCacheRow(identity);
+  if (shouldServeCachedDashboardRow(row)) {
+    const refresh = shouldQueueDashboardRefresh(row) ? await enqueueIfStale(row, identity, requestContext(request)) : null;
+    return ok(cacheEnvelope(row, refresh, moduleKey, fallback));
+  }
+
+  try {
+    const payload = await compute();
+    const savedRow = await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
+    const freshness = payloadFreshness(savedRow);
+    return ok(responseEnvelope({ key: moduleKey, data: payload, freshness, generatedAt: freshness.generatedAt }));
+  } catch (error) {
+    console.error(`compute ${moduleKey} failed:`, error?.message || error);
+    return ok(cacheEnvelope(null, { queued: false, reason: 'build_failed', jobId: null }, moduleKey, fallback));
+  }
+}
+
+async function readCachedDirectPayload({ request, identity, moduleKey, compute }) {
+  const row = await getCacheRow(identity);
+  if (shouldServeCachedDashboardRow(row)) {
+    if (shouldQueueDashboardRefresh(row)) await enqueueIfStale(row, identity, requestContext(request));
+    return serializeCacheRow(row)?.payload ?? null;
+  }
+
+  const payload = await compute();
+  await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
+  return payload;
+}
+
+async function buildExportData(context) {
+  const [telemetry, confusion, authority, schema, coverage, index, executive, llmMentions] = await Promise.all([
+    buildModule('telemetry', context),
+    buildModule('confusion', context),
+    buildModule('authority', context),
+    buildModule('schema', context),
+    buildModule('coverage', context),
+    buildModule('index', context),
+    buildModule('executive_summary', context),
+    context.siteId
+      ? buildLlmMentionsOverview({ siteId: context.siteId, days: rangeToDays(context.rangeKey), sources: DEFAULT_LLM_MENTION_SOURCES }).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+  return {
+    generatedAt: new Date().toISOString(),
+    range: context.rangeKey,
+    telemetry,
+    confusion,
+    authority,
+    schema,
+    coverage,
+    index,
+    executive,
+    llmMentions,
+  };
+}
+
+async function buildDashboardCachePayload(moduleKey, context) {
+  const normalized = normalizeDashboardModuleKey(moduleKey);
+  if (normalized === 'overview') return buildDashboardOverview(context);
+  if (normalized === 'gold') return buildGoldDashboard(context);
+  if (normalized === 'stats') return buildDashboardStats(context);
+  if (normalized === 'export_data') return buildExportData(context);
+  if (normalized === 'llm_mentions_overview') {
+    const days = Number(context.params?.days || rangeToDays(context.rangeKey));
+    const sources = Array.isArray(context.params?.sources) ? context.params.sources : DEFAULT_LLM_MENTION_SOURCES;
+    return buildLlmMentionsOverview({
+      siteId: context.siteId,
+      days,
+      sources,
+    });
+  }
+  return buildModule(normalized, context);
 }
 
 export function parseDashboardContext(request, { customerDefault = false } = {}) {
@@ -78,24 +173,20 @@ export async function readDashboardOverview(request) {
     moduleKey: 'overview',
     params: { portalScope: context.portalScope },
   });
-  const row = await getCacheRow(identity);
-  if (row && !isCacheStale(row)) return ok(cacheEnvelope(row, null, 'overview', emptyDashboardOverview()));
-
-  try {
-    const payload = await buildDashboardOverview(context);
-    upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule('overview') }).catch(() => {});
-    return ok(responseEnvelope({ key: 'overview', data: payload, freshness: computedFreshness() }));
-  } catch (error) {
-    console.error('buildDashboardOverview failed:', error?.message || error);
-    if (row) return ok(cacheEnvelope(row, await enqueueIfStale(row, identity, request), 'overview', emptyDashboardOverview()));
-    return ok(cacheEnvelope(null, { queued: false, reason: 'build_failed', jobId: null }, 'overview', emptyDashboardOverview()));
-  }
+  return readCachedEnvelope({
+    request,
+    identity,
+    moduleKey: 'overview',
+    fallback: emptyDashboardOverview(),
+    compute: () => buildDashboardOverview(context),
+  });
 }
 
-export async function readDashboardModule(request, moduleKey) {
+export async function readDashboardModule(request, rawModuleKey) {
+  const moduleKey = normalizeDashboardModuleKey(rawModuleKey);
   const context = parseDashboardContext(request);
   if (!DASHBOARD_MODULES.includes(moduleKey)) {
-    return { status: 404, body: { error: `Unsupported module: ${moduleKey}` } };
+    return { status: 404, body: { error: `Unsupported module: ${rawModuleKey}` } };
   }
   await assertSiteAccess(context);
 
@@ -104,60 +195,142 @@ export async function readDashboardModule(request, moduleKey) {
     moduleKey,
     params: { portalScope: context.portalScope },
   });
-  const row = await getCacheRow(identity);
-  if (row && !isCacheStale(row)) return ok(cacheEnvelope(row, null, moduleKey));
-
-  try {
-    const payload = await buildModule(moduleKey, context);
-    upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) }).catch(() => {});
-    return ok(responseEnvelope({ key: moduleKey, data: payload, freshness: computedFreshness() }));
-  } catch (error) {
-    console.error(`buildModule(${moduleKey}) failed:`, error?.message || error);
-    if (row) return ok(cacheEnvelope(row, await enqueueIfStale(row, identity, request), moduleKey));
-    return ok(cacheEnvelope(null, { queued: false, reason: 'build_failed', jobId: null }, moduleKey));
-  }
+  return readCachedEnvelope({
+    request,
+    identity,
+    moduleKey,
+    compute: () => buildModule(moduleKey, context),
+  });
 }
 
 export async function readDashboardGold(request) {
   const context = parseDashboardContext(request, { customerDefault: true });
   if (!context.siteId) return { status: 400, body: { error: 'siteId is required' } };
   await assertSiteAccess(context);
-  return ok(await buildGoldDashboard(context));
+  const identity = cacheIdentity({ ...context, moduleKey: 'gold', params: { portalScope: context.portalScope } });
+  return ok(await readCachedDirectPayload({
+    request,
+    identity,
+    moduleKey: 'gold',
+    compute: () => buildGoldDashboard(context),
+  }));
 }
 
 export async function readDashboardStats(request) {
   const context = parseDashboardContext(request);
   await assertSiteAccess(context);
-  return ok(await buildDashboardStats(context));
+  const identity = cacheIdentity({ ...context, moduleKey: 'stats', params: { portalScope: context.portalScope } });
+  return ok(await readCachedDirectPayload({
+    request,
+    identity,
+    moduleKey: 'stats',
+    compute: () => buildDashboardStats(context),
+  }));
 }
 
 export async function readDashboardExportData(request) {
   const context = parseDashboardContext(request);
   await assertSiteAccess(context);
-  const [telemetry, confusion, authority, schema, coverage, index, executive, llmMentions] = await Promise.all([
-    buildModule('telemetry', context),
-    buildModule('confusion', context),
-    buildModule('authority', context),
-    buildModule('schema', context),
-    buildModule('coverage', context),
-    buildModule('index', context),
-    buildModule('executive_summary', context),
-    context.siteId
-      ? buildLlmMentionsOverview({ siteId: context.siteId, days: rangeToDays(context.rangeKey), sources: ['chat_gpt', 'google_ai_overviews'] }).catch(() => null)
-      : Promise.resolve(null),
-  ]);
-  return ok({
-    generatedAt: new Date().toISOString(),
-    range: context.rangeKey,
-    telemetry,
-    confusion,
-    authority,
-    schema,
-    coverage,
-    index,
-    executive,
-    llmMentions,
+  const identity = cacheIdentity({ ...context, moduleKey: 'export_data', params: { portalScope: context.portalScope } });
+  return ok(await readCachedDirectPayload({
+    request,
+    identity,
+    moduleKey: 'export_data',
+    compute: () => buildExportData(context),
+  }));
+}
+
+async function listActiveDashboardSites() {
+  const sql = db();
+  return sql`
+    SELECT id
+    FROM sites
+    WHERE status = 'active'
+    ORDER BY domain ASC
+  `;
+}
+
+function targetIdentity(target) {
+  return cacheIdentity({
+    portalScope: target.portalScope,
+    moduleKey: target.moduleKey,
+    siteId: target.siteId,
+    rangeKey: target.rangeKey,
+    params: target.params || { portalScope: target.portalScope },
   });
+}
+
+export function buildDashboardPrewarmTargets(sites, options = {}) {
+  const ranges = options.ranges || DASHBOARD_PREWARM_RANGES;
+  const portals = options.portalScopes || DASHBOARD_PREWARM_PORTALS;
+  const siteIds = (sites || []).map((site) => (typeof site === 'string' ? site : site.id)).filter(Boolean);
+  const targets = [];
+
+  for (const rangeKey of ranges) {
+    for (const portalScope of portals) {
+      targets.push({ moduleKey: 'overview', siteId: null, rangeKey, portalScope, params: { portalScope } });
+      targets.push({ moduleKey: 'stats', siteId: null, rangeKey, portalScope, params: { portalScope } });
+    }
+
+    for (const siteId of siteIds) {
+      for (const portalScope of portals) {
+        targets.push({ moduleKey: 'overview', siteId, rangeKey, portalScope, params: { portalScope } });
+        targets.push({ moduleKey: 'stats', siteId, rangeKey, portalScope, params: { portalScope } });
+      }
+
+      targets.push({ moduleKey: 'gold', siteId, rangeKey, portalScope: 'customer', params: { portalScope: 'customer' } });
+      targets.push({
+        moduleKey: 'llm_mentions_overview',
+        siteId,
+        rangeKey,
+        portalScope: 'employee',
+        params: { days: rangeToDays(rangeKey), sources: DEFAULT_LLM_MENTION_SOURCES },
+      });
+    }
+  }
+
+  return targets;
+}
+
+export async function prewarmDashboard(body = {}) {
+  const limit = Math.max(1, Math.min(Number(body.limit || process.env.DASHBOARD_PREWARM_LIMIT || 20), 100));
+  const force = body.force === true;
+  const sites = await listActiveDashboardSites();
+  const targets = buildDashboardPrewarmTargets(sites);
+  const results = [];
+  let processed = 0;
+
+  for (const target of targets) {
+    const identity = targetIdentity(target);
+    const existing = await getCacheRow(identity);
+    if (existing && !force && !isCacheStale(existing)) {
+      results.push({ moduleKey: target.moduleKey, siteId: target.siteId, range: target.rangeKey, portalScope: target.portalScope, status: 'skipped_fresh' });
+      continue;
+    }
+    if (processed >= limit) {
+      results.push({ moduleKey: target.moduleKey, siteId: target.siteId, range: target.rangeKey, portalScope: target.portalScope, status: 'deferred' });
+      continue;
+    }
+
+    try {
+      const payload = await buildDashboardCachePayload(target.moduleKey, target);
+      await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(target.moduleKey) });
+      processed += 1;
+      results.push({ moduleKey: target.moduleKey, siteId: target.siteId, range: target.rangeKey, portalScope: target.portalScope, status: 'ready' });
+    } catch (error) {
+      processed += 1;
+      results.push({
+        moduleKey: target.moduleKey,
+        siteId: target.siteId,
+        range: target.rangeKey,
+        portalScope: target.portalScope,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return ok({ ok: true, totalTargets: targets.length, processed, results });
 }
 
 export async function refreshDashboard(request, body) {
@@ -170,7 +343,7 @@ export async function refreshDashboard(request, body) {
   await assertSiteAccess({ siteId, portalScope, user });
 
   const modules = Array.isArray(body.modules) && body.modules.length > 0
-    ? body.modules
+    ? body.modules.map(normalizeDashboardModuleKey)
     : ['telemetry', 'authority', 'executive_summary', 'experience', 'search_diagnostics', 'confusion', 'coverage'];
 
   const results = [];
@@ -196,29 +369,25 @@ export async function processRefreshJobs(body = {}) {
 
   for (const job of jobs) {
     try {
+      const moduleKey = normalizeDashboardModuleKey(job.module_key);
+      const siteId = job.site_id === EMPTY_SITE_UUID ? null : job.site_id;
       const identity = {
         portalScope: job.portal_scope,
-        moduleKey: job.module_key,
-        siteId: job.site_id,
+        moduleKey,
+        siteId,
         rangeKey: job.range_key,
         params: job.params || {},
         paramsHash: job.params_hash,
         modelVersion: job.model_version,
       };
-      const payload =
-        job.module_key === 'llm_mentions_overview'
-          ? await buildLlmMentionsOverview({
-              siteId: job.site_id,
-              days: Number(job.params?.days || 7),
-              sources: Array.isArray(job.params?.sources) ? job.params.sources : ['chat_gpt', 'google_ai_overviews'],
-            })
-          : await buildModule(job.module_key, {
-              siteId: job.site_id,
-              rangeKey: job.range_key,
-              portalScope: job.portal_scope,
-            });
+      const payload = await buildDashboardCachePayload(moduleKey, {
+        siteId,
+        rangeKey: job.range_key,
+        portalScope: job.portal_scope,
+        params: job.params || {},
+      });
 
-      await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(job.module_key) });
+      await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
       await completeRefreshJob(job.id, { ok: true });
       results.push({ jobId: job.id, moduleKey: job.module_key, ok: true });
     } catch (error) {
@@ -228,4 +397,16 @@ export async function processRefreshJobs(body = {}) {
   }
 
   return ok({ ok: true, claimed: jobs.length, results });
+}
+
+export async function runDashboardCronRefresh(body = {}) {
+  const [prewarm, queuedJobs] = await Promise.all([
+    prewarmDashboard({ limit: body.prewarmLimit || body.limit || process.env.DASHBOARD_PREWARM_LIMIT || 20, force: body.forcePrewarm === true }),
+    processRefreshJobs({ limit: body.jobLimit || 5 }),
+  ]);
+  return ok({
+    ok: true,
+    prewarm: prewarm.body,
+    queuedJobs: queuedJobs.body,
+  });
 }

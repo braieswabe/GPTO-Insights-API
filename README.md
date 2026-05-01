@@ -23,6 +23,7 @@ The server starts at `http://127.0.0.1:4011`.
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS origins |
 | `PORT` | No | Local dev port (default: 4011) |
 | `DASHBOARD_REFRESH_COOLDOWN_SECONDS` | No | Min seconds between refresh attempts (default: 300) |
+| `DASHBOARD_PREWARM_LIMIT` | No | Max dashboard cache targets to prewarm per cron run (default: 20) |
 | `DATAFORSEO_AUTH_HEADER` | No | Basic auth header for DataForSEO live LLM Mentions calls |
 | `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | No | Alternative DataForSEO credentials |
 
@@ -54,6 +55,7 @@ The server starts at `http://127.0.0.1:4011`.
 - `GET /internal/health` – health check
 - `POST /internal/refresh/dashboard` – force-refresh modules
 - `POST /internal/refresh/llm-mentions` – force-refresh LLM data
+- `POST /internal/refresh/prewarm` – precompute common dashboard cache payloads
 - `POST /internal/refresh/process` – claim and process queued jobs
 
 ### Auth

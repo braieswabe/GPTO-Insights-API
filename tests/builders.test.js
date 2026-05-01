@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { DASHBOARD_MODULES, ttlForModule, normalizePortal, normalizeRange, rangeToDays } from '../src/types.js';
+import { DASHBOARD_MODULES, ttlForModule, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays } from '../src/types.js';
 
 describe('types constants', () => {
   it('has all expected modules', () => {
@@ -26,6 +26,13 @@ describe('types constants', () => {
     assert.equal(ttlForModule('coverage'), 60 * 60);
     assert.equal(ttlForModule('llm_mentions_overview'), 6 * 60 * 60);
     assert.equal(ttlForModule('unknown'), 30 * 60);
+  });
+
+  it('normalizes GPTO public module route aliases', () => {
+    assert.equal(normalizeDashboardModuleKey('search-diagnostics'), 'search_diagnostics');
+    assert.equal(normalizeDashboardModuleKey('executive-summary'), 'executive_summary');
+    assert.equal(normalizeDashboardModuleKey('ai-readability'), 'ai_readability');
+    assert.equal(ttlForModule('llm-mentions-overview'), 6 * 60 * 60);
   });
 
   it('normalizePortal handles values', () => {

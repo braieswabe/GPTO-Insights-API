@@ -1,5 +1,5 @@
 import { loadEnv } from '../../../src/env.js';
-import { processRefreshJobs } from '../../../src/services/dashboard.js';
+import { runDashboardCronRefresh } from '../../../src/services/dashboard.js';
 
 loadEnv();
 
@@ -12,7 +12,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const result = await processRefreshJobs({ limit: 5 });
+    const result = await runDashboardCronRefresh({ prewarmLimit: Number(process.env.DASHBOARD_PREWARM_LIMIT || 20), jobLimit: 5 });
     res.writeHead(result.status, { 'content-type': 'application/json' });
     res.end(JSON.stringify(result.body));
   } catch (error) {
