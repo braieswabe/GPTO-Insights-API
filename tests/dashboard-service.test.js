@@ -14,7 +14,31 @@ describe('dashboard cache read policy', () => {
 
   it('recomputes cached overview rows missing the display contract', () => {
     assert.equal(shouldServeCachedDashboardRow({ payload: { telemetry: {} } }, 'overview'), false);
-    assert.equal(shouldServeCachedDashboardRow({ payload: { telemetry: {}, display: {} } }, 'overview'), true);
+    assert.equal(
+      shouldServeCachedDashboardRow(
+        { payload: { telemetry: {}, display: {}, executiveSummary: { focusLanes: { performingWell: { items: [] } } } } },
+        'overview'
+      ),
+      true
+    );
+  });
+
+  it('recomputes cached overview rows missing server-built focusLanes', () => {
+    assert.equal(
+      shouldServeCachedDashboardRow(
+        { payload: { telemetry: {}, display: {}, executiveSummary: {} } },
+        'overview'
+      ),
+      false
+    );
+  });
+
+  it('recomputes cached export_data rows missing journey or searchDiagnostics', () => {
+    assert.equal(shouldServeCachedDashboardRow({ payload: { display: {} } }, 'export_data'), false);
+    assert.equal(
+      shouldServeCachedDashboardRow({ payload: { display: {}, journey: null, searchDiagnostics: null } }, 'export_data'),
+      true
+    );
   });
 
   it('recomputes cached gold rows missing gateway-owned visitor scoring', () => {

@@ -2,7 +2,7 @@
 
 > **Purpose.** This is the contract between the GPTO Dashboard (`/Users/braiebook/GPTO/apps/dashboard`) and the Insights Gateway (`/Users/braiebook/gpto-insights-gateway`). Every visible scorecard, KPI, badge, narrative, and tooltip on the dashboard is fed by a specific gateway endpoint and field. The dashboard is a **pure fetch + display layer** — *all* scoring, blending, plain-language strings, OpenAI narration, and severity bands are computed by the gateway.
 >
-> **Version.** `model_version = gpto.dashboard.insights.v2` (cache-invalidating bump for v2 contract).
+> **Version.** `model_version = gpto.dashboard.insights.v2.1` (additive bump: server-built `executiveSummary.focusLanes`; `journey`, `searchDiagnostics`, `experience` added to export-data).
 >
 > **Updating this doc.** When you add a new card or rename a field, update the corresponding row below. CI tests in `tests/builders.test.js` and `tests/scoring.test.js` cover the contract shape.
 
@@ -44,9 +44,21 @@ Source: `GET /v1/dashboard/overview` and `GET /v1/dashboard/bundle`. The bundle 
 | Experience Health | Blended friction + engagement | `executiveSummary.pulseBlends.experienceHealth.{ score, band, severity }`, `executiveSummary.pulseBlends.experienceHealthSource` |
 | Coverage Risk | Risk band + label | `executiveSummary.pulseBlends.coverageRisk.{ band, label, priorityFixes, missingFunnelStages }` |
 
-### 2.2 Signal chips (right rail)
+### 2.2 Focus Lanes (server-built, was client-composed pre-v2.1)
 
-`executiveSummary.signalChips: Array<{ id, label, status: 'strong'|'watch'|'warn'|'critical'|'idle'|'unknown', detail }>` — already mapped to the four-state UI palette by the gateway. The dashboard renders these directly via `normalizeSignalChipStatus`.
+`executiveSummary.focusLanes: { performingWell, needsAttention, opportunities }`. Each lane is `{ id, label, description, plainMeaning, items: FocusLaneItem[] }`, and each item is `{ id, label, value, severity: 'good'|'watch'|'warn'|'critical', source, href? }`.
+
+| Lane | Sources blended by the gateway |
+|---|---|
+| `performingWell` | `telemetry.topPages` (top 3, deduped by URL) + `llmMentions.summary.topPages` (top 2, AI-cited) |
+| `needsAttention` | `aiVisibility.signals` filtered to `critical`/`warn` (info/ok dropped) + `coverage.priorityItems` (top 2) + `confusion.signals.deadEnds` (top 2) |
+| `opportunities` | `confusion.signals.repeatedSearches` (top 3) |
+
+The `performingWell` lane works in both single-site and all-sites scope (the previous client-side composition needed a selected site).
+
+### 2.3 Signal chips (right rail)
+
+`executiveSummary.signalChips: Array<{ id, label, status: 'strong'|'watch'|'warn'|'critical'|'idle'|'unknown', detail }>` — already mapped to the four-state UI palette by the gateway. *Note:* the dashboard's main page no longer renders the chips strip in the Business Brief (it duplicated the PulseCards directly below it). The chips are still emitted for the Reports page and PDF export.
 
 ### 2.3 Module index (left nav)
 
@@ -157,17 +169,18 @@ The export service includes everything the PDF builder needs:
 
 | Section | Field |
 |---|---|
-| Executive summary | `executiveSummary` (full block) |
+| Executive summary | `executiveSummary` (full block — includes `focusLanes`, `signalChips`, `pulseBlends`) |
 | AI visibility | `aiVisibility` (composite + breakdown + signals) |
 | AI readability | `aiReadability` (Flesch-Kincaid blend + suggestions) |
-| Telemetry | `telemetry.{ totalEvents, trendPct, trendPctLabel, perDay, llmMentionsSignals }` |
+| Telemetry | `telemetry.{ totalEvents, trendPct, trendPctLabel, perDay, llmMentionsSignals, topPages }` |
 | Authority | `authority.{ score, band, severity, blockers, confidenceGaps }` |
 | Schema | `schema.{ score, band, severity, templates }` |
 | Coverage | `coverage.{ score, band, riskBand, missingFunnelStages, priorityFixes }` |
 | Confusion | `confusion.{ score, signals[].recommendedFix }` |
-| Experience | `experience.{ healthScore, band, severity }` |
-| Journey | `journey.{ rowCount, loops, strengthBand }` |
-| Display layer | `display.{ confusion, telemetry, executiveSummary }` |
+| Experience | `experience.{ healthScore, band, severity, pages }` ← **added in v2.1** |
+| Journey | `journey.{ rowCount, loops, strengthBand, rows }` ← **added in v2.1** |
+| Search Diagnostics | `searchDiagnostics.{ rows, insufficientData }` ← **added in v2.1** |
+| Display layer | `display.{ confusion, telemetry, executiveSummary, journey, searchDiagnostics, experience }` |
 
 ---
 
@@ -265,5 +278,13 @@ These responsibilities live exclusively in the gateway:
 - ❌ Re-derive friction / engagement / coverage risk (use `executiveSummary.pulseBlends`)
 - ❌ Hard-code mock C-suite metrics (use `/v1/dashboard/csuite`)
 - ❌ Map confidence → status (use `dashboardIndex[].confidence` + UI palette)
+- ❌ Compose Focus Lanes from telemetry + LLM + coverage + confusion (use `executiveSummary.focusLanes`) ← **added in v2.1**
 
 If a UI component needs a value that isn't yet provided, the fix is to add it to the gateway builder, not to recompute on the client.
+
+## 13. Operational notes (v2.1)
+
+- **Top Pages bug fix.** Pre-v2.1, the daily rollup writer in [`src/services/telemetry-daily-rollup.js`](../src/services/telemetry-daily-rollup.js) wrote `top_pages` and `top_intents` as raw JS arrays, which postgres-js silently coerced to `NULL` in the JSONB column. The fix wraps both in `tx.json(...)` (matching `cache.js`, `jobs.js`, `llm-admin.js`). After deploy, run a force backfill via `POST /internal/rollup/telemetry-daily { from, to, force: true }` for any date range that needs to be repopulated.
+- **Today's UTC rollup re-runs.** Past UTC days are immutable once `complete`; today's UTC day always re-runs (events keep arriving). This avoids stale `top_pages` for the in-progress day.
+- **Friendly empty states.** The `NoDataState` component in `apps/dashboard/src/app/dashboard/page.tsx` accepts an optional `dataConnection` prop and renders distinct messaging for `connected` (awaiting first events), `pending`/`disconnected` (verify tracker), and `stale` (recent events missing) — backed by `sitesList[].dataConnection`.
+- **Removed redundancy.** The Main Dashboard's "Individual Dashboards" section dropped 4 tiles (`telemetry`, `authority`, `coverage`, `llm_ai_visibility`) that duplicated the PulseCards / dedicated detail cards above. The Business Brief signal-chips strip was also removed (same content as the PulseCards directly below). Remaining tiles: `confusion`, `schema` (each unique).

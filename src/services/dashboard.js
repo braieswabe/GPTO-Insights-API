@@ -82,8 +82,18 @@ function payloadFreshness(savedRow) {
 
 function dashboardPayloadSatisfiesContract(payload, moduleKey) {
   if (!payload) return false;
-  if (moduleKey === 'overview') return Boolean(payload.display);
-  if (moduleKey === 'export_data') return Boolean(payload.display);
+  if (moduleKey === 'overview') {
+    if (!payload.display) return false;
+    // v2.1: focusLanes must be server-built (no longer composed client-side)
+    if (!payload.executiveSummary?.focusLanes) return false;
+    return true;
+  }
+  if (moduleKey === 'export_data') {
+    if (!payload.display) return false;
+    // v2.1: journey + searchDiagnostics must be present in export-data
+    if (!('journey' in payload) || !('searchDiagnostics' in payload)) return false;
+    return true;
+  }
   if (moduleKey === 'gold') {
     const axes = payload.optimisationAxes || {};
     const axisValues = Object.values(axes);
@@ -192,7 +202,7 @@ async function readCachedDirectPayload({ request, identity, moduleKey, compute }
 async function buildExportData(context) {
   const { start, end } = boundsFromInput(context);
   const spanDays = boundsDaySpan({ start, end });
-  const [telemetry, confusion, authority, schema, coverage, index, executive, llmMentions, aiReadability] = await Promise.all([
+  const [telemetry, confusion, authority, schema, coverage, index, executive, journey, searchDiagnostics, experience, llmMentions, aiReadability] = await Promise.all([
     buildModule('telemetry', context),
     buildModule('confusion', context),
     buildModule('authority', context),
@@ -200,6 +210,9 @@ async function buildExportData(context) {
     buildModule('coverage', context),
     buildModule('index', context),
     buildModule('executive_summary', context),
+    buildModule('journey', context).catch(() => null),
+    buildModule('search_diagnostics', context).catch(() => null),
+    buildModule('experience', context).catch(() => null),
     context.siteId
       ? buildLlmMentionsOverview({
           siteId: context.siteId,
@@ -222,6 +235,9 @@ async function buildExportData(context) {
     index,
     executive,
     executiveSummary: executive,
+    journey,
+    searchDiagnostics,
+    experience,
     llmMentions,
     aiReadability,
     display: {
@@ -266,6 +282,27 @@ async function buildExportData(context) {
             mentions: llmMentions.summary?.metrics?.mentions ?? null,
             aiSearchVolume: llmMentions.summary?.metrics?.aiSearchVolume ?? null,
             impressions: llmMentions.summary?.metrics?.impressions ?? null,
+          }
+        : null,
+      journey: journey
+        ? {
+            rowCount: journey.rowCount ?? (journey.rows?.length ?? 0),
+            loops: journey.loops ?? 0,
+            strengthBand: journey.strengthBand ?? null,
+          }
+        : null,
+      searchDiagnostics: searchDiagnostics
+        ? {
+            rowCount: searchDiagnostics.rows?.length ?? 0,
+            insufficientData: Boolean(searchDiagnostics.insufficientData),
+          }
+        : null,
+      experience: experience
+        ? {
+            healthScore: experience.healthScore ?? null,
+            band: experience.band ?? null,
+            severity: experience.severity ?? null,
+            pageCount: experience.pages?.length ?? 0,
           }
         : null,
     },

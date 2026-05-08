@@ -34,7 +34,7 @@ describe('types constants', () => {
   });
 
   it('uses bumped model_version for cache invalidation', () => {
-    assert.equal(MODEL_VERSION, 'gpto.dashboard.insights.v2');
+    assert.equal(MODEL_VERSION, 'gpto.dashboard.insights.v2.1');
   });
 
   it('normalizes GPTO public module route aliases', () => {

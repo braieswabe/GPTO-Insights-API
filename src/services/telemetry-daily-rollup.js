@@ -38,7 +38,11 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
   const dayStart = utcDayStart(dayIso);
   const dayEnd = utcDayExclusiveEnd(dayIso);
 
-  if (!force) {
+  // Past UTC days are immutable once complete; today's UTC day must always re-run
+  // because new events keep arriving for the same day.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const isTodayUtc = dayIso === todayIso;
+  if (!force && !isTodayUtc) {
     const [existing] = await tx`
       SELECT status FROM dashboard_telemetry_daily_rollup_progress
       WHERE site_id = ${siteId}::uuid AND day = ${dayIso}::date
@@ -167,8 +171,8 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
       ${pageViews},
       ${Number(agg?.searches || 0)},
       ${Number(agg?.interactions || 0)},
-      ${topPagesRow?.top_pages ?? tx.json([])},
-      ${topIntentsRow?.top_intents ?? tx.json([])},
+      ${tx.json(Array.isArray(topPagesRow?.top_pages) ? topPagesRow.top_pages : [])},
+      ${tx.json(Array.isArray(topIntentsRow?.top_intents) ? topIntentsRow.top_intents : [])},
       NULL
     )
   `;

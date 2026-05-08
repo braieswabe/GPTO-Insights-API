@@ -20,21 +20,6 @@ export async function buildDashboardOverview(input) {
   const sql = db();
   const sitesList = await loadSitesWithConnectionFields(sql, input.siteId);
 
-  const [telemetry, authority, executiveSummary, experience, searchDiagnostics, confusion, coverage, schema, journey, indexData, aiReadability] =
-    await Promise.all([
-      buildTelemetry(input),
-      buildAuthority(input),
-      buildExecutiveSummary(input),
-      buildExperience(input),
-      buildSearchDiagnostics(input),
-      buildConfusion(input),
-      buildCoverage(input),
-      buildSchema(input),
-      buildJourney(input),
-      buildIndex(input),
-      buildAiReadability(input).catch(() => null),
-    ]);
-
   let llmMentions = null;
   if (input.siteId) {
     const { start, end } = boundsFromInput(input);
@@ -47,6 +32,21 @@ export async function buildDashboardOverview(input) {
       sources: ['chat_gpt', 'google_ai_overviews'],
     }).catch(() => null);
   }
+
+  const [telemetry, authority, executiveSummary, experience, searchDiagnostics, confusion, coverage, schema, journey, indexData, aiReadability] =
+    await Promise.all([
+      buildTelemetry(input),
+      buildAuthority(input),
+      buildExecutiveSummary(input, { llmMentions }),
+      buildExperience(input),
+      buildSearchDiagnostics(input),
+      buildConfusion(input),
+      buildCoverage(input),
+      buildSchema(input),
+      buildJourney(input),
+      buildIndex(input),
+      buildAiReadability(input).catch(() => null),
+    ]);
 
   const display = buildDisplayLayer({
     telemetry,

@@ -75,7 +75,8 @@ function referencesFromExperience(experience, limit = 2) {
   return refs;
 }
 
-export async function buildExecutiveSummary(input) {
+export async function buildExecutiveSummary(input, extras = {}) {
+  const llmMentions = extras?.llmMentions ?? null;
   const [telemetry, authority, experience, searchDiagnostics, confusion, coverage, schema, journey] = await Promise.all([
     buildTelemetry(input),
     buildAuthority(input),
@@ -89,6 +90,7 @@ export async function buildExecutiveSummary(input) {
 
   const llmSignals = telemetry?.llmMentionsSignals || null;
   const aiComposite = llmSignals?.composite ?? null;
+  const aiVisibilitySignals = llmMentions?.aiVisibility?.signals || [];
   const aiVisibilityBlock = aiComposite != null
     ? {
         composite: aiComposite,
@@ -100,6 +102,7 @@ export async function buildExecutiveSummary(input) {
         lastUpdatedAt: llmSignals?.lastUpdatedAt || null,
         freshness: llmSignals?.freshness || null,
         narrative: llmSignals?.freshness?.summary || null,
+        signals: aiVisibilitySignals,
       }
     : null;
 
@@ -185,11 +188,20 @@ export async function buildExecutiveSummary(input) {
     },
   ];
 
+  const focusLanes = buildFocusLanes({
+    telemetry,
+    confusion,
+    coverage,
+    aiVisibility: aiVisibilityBlock,
+    llmMentions,
+  });
+
   return {
     range: telemetry.range,
     insights,
     aiVisibility: aiVisibilityBlock,
     signalChips,
+    focusLanes,
     pulseBlends: {
       experienceHealth: experienceBlend,
       coverageRisk: {
@@ -284,4 +296,125 @@ function buildSignalChipsForSummary({ telemetry, confusion, authority, schema, c
         : 'Awaiting snapshot-backed metrics',
     },
   ];
+}
+
+function ensureUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  return `https://${s.replace(/^\/+/, '')}`;
+}
+
+function severityForLlmLevel(level) {
+  if (level === 'critical') return 'critical';
+  if (level === 'warn') return 'warn';
+  if (level === 'info') return 'watch';
+  return 'good';
+}
+
+export function buildFocusLanes({ telemetry, confusion, coverage, aiVisibility, llmMentions }) {
+  const performingWell = [];
+  const seenPerforming = new Set();
+
+  for (const page of (telemetry?.topPages || []).slice(0, 3)) {
+    const url = ensureUrl(page?.url);
+    if (!url || seenPerforming.has(url)) continue;
+    seenPerforming.add(url);
+    performingWell.push({
+      id: `top:${url}`,
+      label: String(page?.url || url),
+      value: page?.count ? `${Number(page.count).toLocaleString()} views` : null,
+      severity: 'good',
+      source: 'telemetry.topPages',
+      href: url,
+    });
+  }
+
+  for (const page of (llmMentions?.summary?.topPages || []).slice(0, 2)) {
+    const url = ensureUrl(page?.url);
+    const label = String(page?.url || '').trim();
+    if (!label) continue;
+    const id = `ai-cited:${url || label}`;
+    if (seenPerforming.has(id)) continue;
+    seenPerforming.add(id);
+    performingWell.push({
+      id,
+      label: `${label} (AI-cited)`,
+      value: page?.count != null ? `${Number(page.count).toLocaleString()} citations` : null,
+      severity: 'good',
+      source: 'llmMentions.topPages',
+      href: url || undefined,
+    });
+  }
+
+  const needsAttention = [];
+
+  for (const signal of (aiVisibility?.signals || []).slice(0, 4)) {
+    if (!signal?.message) continue;
+    if (signal.level === 'info' || signal.level === 'ok') continue;
+    needsAttention.push({
+      id: `ai:${signal.id || signal.message}`,
+      label: signal.message,
+      value: null,
+      severity: severityForLlmLevel(signal.level),
+      source: 'aiVisibility.signals',
+      href: undefined,
+    });
+  }
+
+  for (const item of (coverage?.priorityItems || []).slice(0, 2)) {
+    needsAttention.push({
+      id: `coverage:${item.id || item.label}`,
+      label: String(item.label || 'Coverage gap'),
+      value: item.severity ? String(item.severity) : null,
+      severity: item.severity === 'critical' ? 'critical' : 'warn',
+      source: 'coverage.priorityItems',
+      href: ensureUrl(item.pages?.[0]) || undefined,
+    });
+  }
+
+  for (const dead of (confusion?.signals?.deadEnds || []).slice(0, 2)) {
+    const url = ensureUrl(dead.url);
+    needsAttention.push({
+      id: `dead:${url || dead.url}`,
+      label: `Dead end: ${dead.url}`,
+      value: dead.count != null ? `${Number(dead.count).toLocaleString()} hits` : null,
+      severity: 'warn',
+      source: 'confusion.deadEnds',
+      href: url || undefined,
+    });
+  }
+
+  const opportunities = (confusion?.signals?.repeatedSearches || []).slice(0, 3).map((item) => ({
+    id: `repeat:${item.query}`,
+    label: `Repeated search: ${item.query}`,
+    value: item.count != null ? `${Number(item.count).toLocaleString()} repeats` : null,
+    severity: 'watch',
+    source: 'confusion.repeatedSearches',
+    href: undefined,
+  }));
+
+  return {
+    performingWell: {
+      id: 'performing_well',
+      label: 'Performing Well',
+      description: 'Pages and AI citations showing strong engagement.',
+      plainMeaning: 'These are working — protect or amplify them.',
+      items: performingWell,
+    },
+    needsAttention: {
+      id: 'needs_attention',
+      label: 'Needs Attention',
+      description: 'Risks and gaps that should be addressed first.',
+      plainMeaning: 'These are hurting visitor experience right now.',
+      items: needsAttention,
+    },
+    opportunities: {
+      id: 'opportunities',
+      label: 'Not Effective',
+      description: 'Visitor effort that is not resolving — review or remove.',
+      plainMeaning: 'These patterns are not producing good outcomes.',
+      items: opportunities,
+    },
+  };
 }
