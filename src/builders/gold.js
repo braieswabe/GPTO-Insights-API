@@ -1,17 +1,5 @@
 import { db } from '../db.js';
-import { rangeToDays } from '../types.js';
-import { buildTelemetry } from './telemetry.js';
-import { buildAuthority } from './authority.js';
-import { buildConfusion } from './confusion.js';
-import { buildCoverage } from './coverage.js';
-import { buildLlmMentionsOverview } from './llm-mentions.js';
-
-function dateWindow(rangeKey) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - rangeToDays(rangeKey));
-  return { start, end };
-}
+import { boundsFromInput, boundsDaySpan } from '../dashboard-range.js';
 
 function trendSymbol(value) {
   if (value > 0.1) return '↑';
@@ -173,7 +161,8 @@ function buildCustomerInsights({
   };
 }
 
-export async function buildGoldDashboard({ siteId, rangeKey }) {
+export async function buildGoldDashboard(input) {
+  const { siteId, rangeKey } = input;
   if (!siteId) {
     const error = new Error('siteId is required');
     error.statusCode = 400;
@@ -193,13 +182,20 @@ export async function buildGoldDashboard({ siteId, rangeKey }) {
     throw error;
   }
 
-  const { start, end } = dateWindow(rangeKey);
+  const { start, end } = boundsFromInput(input);
+  const spanDays = boundsDaySpan({ start, end });
   const [telemetry, authority, confusion, coverage, llmMentions, updates] = await Promise.all([
-    buildTelemetry({ siteId, rangeKey }),
-    buildAuthority({ siteId, rangeKey }),
-    buildConfusion({ siteId, rangeKey }),
-    buildCoverage({ siteId, rangeKey }).catch(() => null),
-    buildLlmMentionsOverview({ siteId, days: rangeToDays(rangeKey), sources: ['chat_gpt', 'google_ai_overviews'] }).catch(() => null),
+    buildTelemetry(input),
+    buildAuthority(input),
+    buildConfusion(input),
+    buildCoverage(input).catch(() => null),
+    buildLlmMentionsOverview({
+      siteId,
+      days: spanDays,
+      windowStart: start,
+      windowEnd: end,
+      sources: ['chat_gpt', 'google_ai_overviews'],
+    }).catch(() => null),
     sql`
       SELECT from_version, to_version, applied_at, created_at
       FROM update_history
@@ -321,8 +317,8 @@ export async function buildGoldDashboard({ siteId, rangeKey }) {
   };
 }
 
-export async function buildDashboardStats({ siteId, rangeKey }) {
-  const telemetry = await buildTelemetry({ siteId, rangeKey });
+export async function buildDashboardStats(input) {
+  const telemetry = await buildTelemetry(input);
   return {
     sites: siteId ? 1 : 0,
     totals: telemetry.totals,

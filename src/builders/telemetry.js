@@ -1,12 +1,5 @@
 import { db } from '../db.js';
-import { rangeToDays } from '../types.js';
-
-function dateWindow(rangeKey) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - rangeToDays(rangeKey));
-  return { start, end };
-}
+import { aggregateTelemetrySeriesByGranularity, boundsFromInput } from '../dashboard-range.js';
 
 function computeTrend(current, previous) {
   if (!previous) return current > 0 ? 1 : 0;
@@ -30,13 +23,15 @@ function mergeCountedJson(rows, field, keyName, limit = 10) {
     .slice(0, limit);
 }
 
-export async function buildTelemetry({ siteId, rangeKey }) {
+export async function buildTelemetry(input) {
+  const { siteId, rangeKey } = input;
   const sql = db();
   const siteIds = await getScopedSiteIds(sql, siteId);
-  const { start, end } = dateWindow(rangeKey);
+  const { start, end } = boundsFromInput(input);
+  const seriesGranularity = input.seriesGranularity || 'day';
 
   if (siteIds.length === 0) {
-    return emptyTelemetry(rangeKey, start, end);
+    return emptyTelemetry(rangeKey, start, end, seriesGranularity);
   }
 
   const rows = await sql`
@@ -49,16 +44,17 @@ export async function buildTelemetry({ siteId, rangeKey }) {
   `;
 
   if (rows.length === 0) {
-    return emptyTelemetry(rangeKey, start, end);
+    return emptyTelemetry(rangeKey, start, end, seriesGranularity);
   }
 
-  const series = rows.map((row) => ({
+  const dailySeries = rows.map((row) => ({
     date: new Date(row.day).toISOString().slice(0, 10),
     visits: row.visits || 0,
     pageViews: row.page_views || 0,
     searches: row.searches || 0,
     interactions: row.interactions || 0,
   }));
+  const series = aggregateTelemetrySeriesByGranularity(dailySeries, seriesGranularity);
 
   const totals = rows.reduce(
     (sum, row) => ({
@@ -84,18 +80,20 @@ export async function buildTelemetry({ siteId, rangeKey }) {
     totals,
     trend,
     series,
+    seriesGranularity,
     topPages: mergeCountedJson(rows, 'top_pages', 'url'),
     topIntents: mergeCountedJson(rows, 'top_intents', 'intent'),
     llmMentionsSignals: null,
   };
 }
 
-function emptyTelemetry(rangeKey, start, end) {
+function emptyTelemetry(rangeKey, start, end, seriesGranularity = 'day') {
   return {
     range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
     totals: { visits: 0, pageViews: 0, searches: 0, interactions: 0 },
     trend: { visits: 0, pageViews: 0, searches: 0, interactions: 0 },
     series: [],
+    seriesGranularity,
     topPages: [],
     topIntents: [],
     llmMentionsSignals: null,

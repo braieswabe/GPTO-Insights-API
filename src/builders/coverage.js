@@ -1,12 +1,5 @@
 import { db } from '../db.js';
-import { rangeToDays } from '../types.js';
-
-function dateWindow(rangeKey) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - rangeToDays(rangeKey));
-  return { start, end };
-}
+import { boundsFromInput } from '../dashboard-range.js';
 
 function average(values) {
   const clean = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
@@ -14,10 +7,11 @@ function average(values) {
   return Math.round(clean.reduce((sum, v) => sum + v, 0) / clean.length);
 }
 
-export async function buildCoverage({ siteId, rangeKey }) {
+export async function buildCoverage(input) {
+  const { siteId, rangeKey } = input;
   const sql = db();
   const siteIds = siteId ? [siteId] : (await sql`SELECT id FROM sites`).map((r) => r.id);
-  const { start, end } = dateWindow(rangeKey);
+  const { start, end } = boundsFromInput(input);
 
   if (siteIds.length === 0) {
     return {

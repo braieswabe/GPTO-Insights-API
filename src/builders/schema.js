@@ -1,12 +1,5 @@
 import { db } from '../db.js';
-import { rangeToDays } from '../types.js';
-
-function dateWindow(rangeKey) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - rangeToDays(rangeKey));
-  return { start, end };
-}
+import { boundsFromInput } from '../dashboard-range.js';
 
 function average(values) {
   if (values.length === 0) return 0;
@@ -22,10 +15,11 @@ function parseMetricValue(value) {
   return null;
 }
 
-export async function buildSchema({ siteId, rangeKey }) {
+export async function buildSchema(input) {
+  const { siteId, rangeKey } = input;
   const sql = db();
   const siteIds = siteId ? [siteId] : (await sql`SELECT id FROM sites`).map((r) => r.id);
-  const { start, end } = dateWindow(rangeKey);
+  const { start, end } = boundsFromInput(input);
 
   if (siteIds.length === 0) {
     return {

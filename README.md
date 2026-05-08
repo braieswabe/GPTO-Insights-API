@@ -26,6 +26,13 @@ The server starts at `http://127.0.0.1:4011`.
 | `DASHBOARD_PREWARM_LIMIT` | No | Max dashboard cache targets to prewarm per cron run (default: 20) |
 | `DATAFORSEO_AUTH_HEADER` | No | Basic auth header for DataForSEO live LLM Mentions calls |
 | `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | No | Alternative DataForSEO credentials |
+| `TELEMETRY_ROLLUP_WITH_DASHBOARD_CRON` | No | When `1`, `/internal/cron/refresh` also runs a bounded UTC telemetry rollup before prewarm |
+| `TELEMETRY_ROLLUP_CRON_DAYS_BACK` | No | UTC days to cover in rollup cron (default `2`) |
+| `TELEMETRY_ROLLUP_CRON_MAX_SITES` | No | Max active sites per rollup cron run (default `40`) |
+| `TELEMETRY_ROLLUP_CRON_MAX_RUNS` | No | Max site×day jobs per rollup cron (default `120`) |
+| `TELEMETRY_ROLLUP_MAX_SPAN_DAYS` | No | Max UTC days per `POST /internal/rollup/telemetry-daily` (default `366`) |
+| `TELEMETRY_ROLLUP_MAX_SITES` | No | Max sites per manual rollup POST (default `80`) |
+| `TELEMETRY_ROLLUP_MAX_RUNS` | No | Max site×day jobs per manual rollup POST (default `500`) |
 
 ## API Endpoints
 
@@ -60,6 +67,8 @@ The server starts at `http://127.0.0.1:4011`.
 - `POST /internal/refresh/llm-mentions` – force-refresh LLM data
 - `POST /internal/refresh/prewarm` – precompute common dashboard cache payloads
 - `POST /internal/refresh/process` – claim and process queued jobs
+- `POST /internal/rollup/telemetry-daily` – materialize `dashboard_rollups_daily` from `telemetry_events` (UTC `from` / `to` as `YYYY-MM-DD`; optional `siteId`, `force`, `maxSites`, `maxRuns`)
+- `GET /internal/rollup/telemetry-daily/progress` – per-day rollup status for a site (`siteId`, `from`, `end` or `to` query params, UTC dates)
 
 ### Auth
 
@@ -85,9 +94,9 @@ Deploy as a standalone Vercel project. Set environment variables in Vercel proje
 vercel --prod
 ```
 
-The Vercel cron job refreshes cache every 15 minutes automatically.
+The Vercel cron job refreshes cache every 15 minutes automatically (`/api/internal/cron/refresh`). A second cron (`/api/internal/cron/rollup-telemetry`, default `5 2 * * *` UTC) materializes **daily telemetry rollups** from `telemetry_events` into `dashboard_rollups_daily` and records progress in `dashboard_telemetry_daily_rollup_progress` so custom dashboard date ranges have underlying facts.
 
-## GPTO Suite Integration
+Daily boundaries are **UTC calendar days** (`day` stored as `00:00:00Z` for that date).
 
 Set the GPTO Suite environment to point at this service:
 

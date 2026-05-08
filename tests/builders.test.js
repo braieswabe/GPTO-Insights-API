@@ -53,5 +53,6 @@ describe('types constants', () => {
   it('rangeToDays converts correctly', () => {
     assert.equal(rangeToDays('7d'), 7);
     assert.equal(rangeToDays('30d'), 30);
+    assert.equal(rangeToDays('custom'), 7);
   });
 });

@@ -62,5 +62,7 @@ export function normalizeRange(value) {
 }
 
 export function rangeToDays(rangeKey) {
-  return rangeKey === '30d' ? 30 : 7;
+  if (rangeKey === '30d') return 30;
+  if (rangeKey === 'custom') return 7;
+  return 7;
 }

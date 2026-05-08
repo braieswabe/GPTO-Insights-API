@@ -5,6 +5,7 @@ export const REQUIRED_TABLES = [
   'dashboard_api_cache',
   'dashboard_refresh_jobs',
   'dashboard_rollups_daily',
+  'dashboard_telemetry_daily_rollup_progress',
   'authority_signals',
   'confusion_signals',
   'coverage_signals',

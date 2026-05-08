@@ -1,5 +1,5 @@
 import { db } from '../db.js';
-import { rangeToDays } from '../types.js';
+import { boundsDaySpan, boundsFromInput } from '../dashboard-range.js';
 import { buildTelemetry } from './telemetry.js';
 import { buildAuthority } from './authority.js';
 import { buildConfusion } from './confusion.js';
@@ -42,9 +42,13 @@ export async function buildDashboardOverview(input) {
 
   let llmMentions = null;
   if (input.siteId) {
+    const { start, end } = boundsFromInput(input);
+    const spanDays = boundsDaySpan({ start, end });
     llmMentions = await buildLlmMentionsOverview({
       siteId: input.siteId,
-      days: rangeToDays(input.rangeKey),
+      days: spanDays,
+      windowStart: start,
+      windowEnd: end,
       sources: ['chat_gpt', 'google_ai_overviews'],
     }).catch(() => null);
   }

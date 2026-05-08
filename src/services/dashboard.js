@@ -7,7 +7,17 @@ import { buildDashboardOverview, buildModule, buildLlmMentionsOverview } from '.
 import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
 import { buildSiteConfig } from '../builders/sites.js';
 import { readLegacyLlmMentions, readLlmCompetitors, readSourceGap } from './llm-mentions.js';
-import { DASHBOARD_MODULES, EMPTY_SITE_UUID, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays, ttlForModule } from '../types.js';
+import { DASHBOARD_MODULES, EMPTY_SITE_UUID, normalizeDashboardModuleKey, normalizePortal, rangeToDays, ttlForModule } from '../types.js';
+import {
+  boundsDaySpan,
+  boundsFromInput,
+  buildDashboardCacheParams,
+  parseDashboardRangeFromBody,
+  parseDashboardRangeFromSearchParams,
+  parseSeriesGranularity,
+  resolveDashboardTimeBounds,
+} from '../dashboard-range.js';
+import { runTelemetryRollupCronWindow } from './telemetry-daily-rollup.js';
 
 const DASHBOARD_PREWARM_RANGES = ['7d', '30d'];
 const DASHBOARD_PREWARM_PORTALS = ['admin', 'employee'];
@@ -152,6 +162,8 @@ async function readCachedDirectPayload({ request, identity, moduleKey, compute }
 }
 
 async function buildExportData(context) {
+  const { start, end } = boundsFromInput(context);
+  const spanDays = boundsDaySpan({ start, end });
   const [telemetry, confusion, authority, schema, coverage, index, executive, llmMentions] = await Promise.all([
     buildModule('telemetry', context),
     buildModule('confusion', context),
@@ -161,7 +173,13 @@ async function buildExportData(context) {
     buildModule('index', context),
     buildModule('executive_summary', context),
     context.siteId
-      ? buildLlmMentionsOverview({ siteId: context.siteId, days: rangeToDays(context.rangeKey), sources: DEFAULT_LLM_MENTION_SOURCES }).catch(() => null)
+      ? buildLlmMentionsOverview({
+          siteId: context.siteId,
+          days: spanDays,
+          windowStart: start,
+          windowEnd: end,
+          sources: DEFAULT_LLM_MENTION_SOURCES,
+        }).catch(() => null)
       : Promise.resolve(null),
   ]);
   return {
@@ -185,11 +203,15 @@ async function buildDashboardCachePayload(moduleKey, context) {
   if (normalized === 'stats') return buildDashboardStats(context);
   if (normalized === 'export_data') return buildExportData(context);
   if (normalized === 'llm_mentions_overview') {
-    const days = Number(context.params?.days || rangeToDays(context.rangeKey));
+    const { start, end } = boundsFromInput(context);
+    const spanDays = boundsDaySpan({ start, end });
+    const days = Number(context.params?.days || spanDays);
     const sources = Array.isArray(context.params?.sources) ? context.params.sources : DEFAULT_LLM_MENTION_SOURCES;
     return buildLlmMentionsOverview({
       siteId: context.siteId,
       days,
+      windowStart: start,
+      windowEnd: end,
       sources,
     });
   }
@@ -198,10 +220,19 @@ async function buildDashboardCachePayload(moduleKey, context) {
 
 export function parseDashboardContext(request, { customerDefault = false } = {}) {
   const search = request.url.searchParams;
+  const { rangeKey: parsedRange, customStart, customEnd } = parseDashboardRangeFromSearchParams(search);
+  const bounds = resolveDashboardTimeBounds(parsedRange, customStart, customEnd);
+  const seriesGranularity = parseSeriesGranularity(search.get('granularity'));
+  const portalScope = normalizePortal(search.get('portal') || (customerDefault ? 'customer' : null));
+  const params = buildDashboardCacheParams(portalScope, bounds, seriesGranularity);
   return {
     siteId: search.get('siteId') || null,
-    portalScope: normalizePortal(search.get('portal') || (customerDefault ? 'customer' : null)),
-    rangeKey: normalizeRange(search.get('range')),
+    portalScope,
+    rangeKey: bounds.rangeKey,
+    windowStart: bounds.start,
+    windowEnd: bounds.end,
+    seriesGranularity,
+    params,
     user: getUserContext(request),
   };
 }
@@ -213,7 +244,7 @@ export async function readDashboardOverview(request) {
   const identity = cacheIdentity({
     ...context,
     moduleKey: 'overview',
-    params: { portalScope: context.portalScope },
+    params: context.params,
   });
   return readCachedEnvelope({
     request,
@@ -235,7 +266,7 @@ export async function readDashboardModule(request, rawModuleKey) {
   const identity = cacheIdentity({
     ...context,
     moduleKey,
-    params: { portalScope: context.portalScope },
+    params: context.params,
   });
   return readCachedEnvelope({
     request,
@@ -249,7 +280,7 @@ export async function readDashboardGold(request) {
   const context = parseDashboardContext(request, { customerDefault: true });
   if (!context.siteId) return { status: 400, body: { error: 'siteId is required' } };
   await assertSiteAccess(context);
-  const identity = cacheIdentity({ ...context, moduleKey: 'gold', params: { portalScope: context.portalScope } });
+  const identity = cacheIdentity({ ...context, moduleKey: 'gold', params: context.params });
   return ok(await readCachedDirectPayload({
     request,
     identity,
@@ -261,7 +292,7 @@ export async function readDashboardGold(request) {
 export async function readDashboardStats(request) {
   const context = parseDashboardContext(request);
   await assertSiteAccess(context);
-  const identity = cacheIdentity({ ...context, moduleKey: 'stats', params: { portalScope: context.portalScope } });
+  const identity = cacheIdentity({ ...context, moduleKey: 'stats', params: context.params });
   return ok(await readCachedDirectPayload({
     request,
     identity,
@@ -273,7 +304,7 @@ export async function readDashboardStats(request) {
 export async function readDashboardExportData(request) {
   const context = parseDashboardContext(request);
   await assertSiteAccess(context);
-  const identity = cacheIdentity({ ...context, moduleKey: 'export_data', params: { portalScope: context.portalScope } });
+  const identity = cacheIdentity({ ...context, moduleKey: 'export_data', params: context.params });
   return ok(await readCachedDirectPayload({
     request,
     identity,
@@ -314,7 +345,8 @@ export async function readDashboardReportBundle(request) {
   const context = parseDashboardContext(request);
   await assertSiteAccess(context);
   const reportSearch = new URLSearchParams(request.url.searchParams);
-  if (!reportSearch.get('days')) reportSearch.set('days', String(rangeToDays(context.rangeKey)));
+  const { start, end } = boundsFromInput(context);
+  if (!reportSearch.get('days')) reportSearch.set('days', String(boundsDaySpan({ start, end })));
   const reportRequest = requestWithSearchParams(request, reportSearch);
 
   const tasks = [
@@ -442,9 +474,23 @@ export async function refreshDashboard(request, body) {
 
   const siteId = body.siteId || null;
   const portalScope = normalizePortal(body.portalScope || body.portal);
-  const rangeKey = normalizeRange(body.range);
+  const { rangeKey: parsedRange, customStart, customEnd } = parseDashboardRangeFromBody(body || {});
+  const bounds = resolveDashboardTimeBounds(parsedRange, customStart, customEnd);
+  const seriesGranularity = parseSeriesGranularity(body.granularity || body.seriesGranularity);
+  const params = buildDashboardCacheParams(portalScope, bounds, seriesGranularity);
   const user = getUserContext(request);
   await assertSiteAccess({ siteId, portalScope, user });
+
+  const buildCtx = {
+    siteId,
+    portalScope,
+    rangeKey: bounds.rangeKey,
+    windowStart: bounds.start,
+    windowEnd: bounds.end,
+    seriesGranularity,
+    params,
+    user,
+  };
 
   const modules = Array.isArray(body.modules) && body.modules.length > 0
     ? body.modules.map(normalizeDashboardModuleKey)
@@ -452,18 +498,18 @@ export async function refreshDashboard(request, body) {
 
   const results = [];
   for (const moduleKey of modules.filter((key) => DASHBOARD_MODULES.includes(key) && key !== 'overview')) {
-    const identity = cacheIdentity({ portalScope, moduleKey, siteId, rangeKey, params: { portalScope } });
-    const payload = await buildModule(moduleKey, { siteId, rangeKey, portalScope });
+    const identity = cacheIdentity({ portalScope, moduleKey, siteId, rangeKey: bounds.rangeKey, params });
+    const payload = await buildModule(moduleKey, buildCtx);
     await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
     results.push({ moduleKey, ok: true });
   }
 
-  const overviewIdentity = cacheIdentity({ portalScope, moduleKey: 'overview', siteId, rangeKey, params: { portalScope } });
-  const overview = await buildDashboardOverview({ siteId, rangeKey, portalScope });
+  const overviewIdentity = cacheIdentity({ portalScope, moduleKey: 'overview', siteId, rangeKey: bounds.rangeKey, params });
+  const overview = await buildDashboardOverview(buildCtx);
   await upsertCacheRow(overviewIdentity, overview, { ttlSeconds: ttlForModule('overview') });
   results.push({ moduleKey: 'overview', ok: true });
 
-  return ok({ ok: true, siteId, portalScope, range: rangeKey, results });
+  return ok({ ok: true, siteId, portalScope, range: bounds.rangeKey, results });
 }
 
 export async function processRefreshJobs(body = {}) {
@@ -484,11 +530,17 @@ export async function processRefreshJobs(body = {}) {
         paramsHash: job.params_hash,
         modelVersion: job.model_version,
       };
+      const jobParams = job.params || {};
+      const bounds = resolveDashboardTimeBounds(job.range_key, jobParams.start || null, jobParams.end || null);
+      const seriesGranularity = parseSeriesGranularity(jobParams.seriesGranularity);
       const payload = await buildDashboardCachePayload(moduleKey, {
         siteId,
-        rangeKey: job.range_key,
+        rangeKey: bounds.rangeKey,
         portalScope: job.portal_scope,
-        params: job.params || {},
+        windowStart: bounds.start,
+        windowEnd: bounds.end,
+        seriesGranularity,
+        params: jobParams,
       });
 
       await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
@@ -504,12 +556,39 @@ export async function processRefreshJobs(body = {}) {
 }
 
 export async function runDashboardCronRefresh(body = {}) {
+  let telemetryRollup = null;
+  if (process.env.TELEMETRY_ROLLUP_WITH_DASHBOARD_CRON === '1') {
+    try {
+      const trDays =
+        body.telemetryRollupDaysBack != null
+          ? Number(body.telemetryRollupDaysBack)
+          : Number(process.env.TELEMETRY_ROLLUP_CRON_DAYS_BACK || 2);
+      const trSites =
+        body.telemetryRollupMaxSites != null
+          ? Number(body.telemetryRollupMaxSites)
+          : Number(process.env.TELEMETRY_ROLLUP_CRON_MAX_SITES || 40);
+      const trRuns =
+        body.telemetryRollupMaxRuns != null
+          ? Number(body.telemetryRollupMaxRuns)
+          : Number(process.env.TELEMETRY_ROLLUP_CRON_MAX_RUNS || 120);
+      telemetryRollup = await runTelemetryRollupCronWindow({
+        daysBack: trDays,
+        maxSites: trSites,
+        maxRuns: trRuns,
+      });
+    } catch (error) {
+      console.error('runDashboardCronRefresh telemetry rollup failed:', error?.message || error);
+      telemetryRollup = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   const [prewarm, queuedJobs] = await Promise.all([
     prewarmDashboard({ limit: body.prewarmLimit || body.limit || process.env.DASHBOARD_PREWARM_LIMIT || 20, force: body.forcePrewarm === true }),
     processRefreshJobs({ limit: body.jobLimit || 5 }),
   ]);
   return ok({
     ok: true,
+    telemetryRollup,
     prewarm: prewarm.body,
     queuedJobs: queuedJobs.body,
   });

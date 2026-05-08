@@ -19,12 +19,14 @@ if (!connectionString) {
 const sql = postgres(connectionString, { ssl: 'require', max: 1 });
 
 async function run() {
-  const migrationPath = resolve(process.cwd(), 'migrations', '0001_init.sql');
-  const migration = readFileSync(migrationPath, 'utf8');
-
-  console.log('Running migration: 0001_init.sql');
-  await sql.unsafe(migration);
-  console.log('Migration complete.');
+  const migrations = ['0001_init.sql', '0002_telemetry_daily_rollups.sql'];
+  for (const name of migrations) {
+    const migrationPath = resolve(process.cwd(), 'migrations', name);
+    const migration = readFileSync(migrationPath, 'utf8');
+    console.log(`Running migration: ${name}`);
+    await sql.unsafe(migration);
+  }
+  console.log('Migrations complete.');
   await sql.end();
 }
 

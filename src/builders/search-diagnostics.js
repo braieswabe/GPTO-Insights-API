@@ -1,17 +1,11 @@
 import { db } from '../db.js';
-import { rangeToDays } from '../types.js';
+import { boundsFromInput } from '../dashboard-range.js';
 
-function dateWindow(rangeKey) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - rangeToDays(rangeKey));
-  return { start, end };
-}
-
-export async function buildSearchDiagnostics({ siteId, rangeKey }) {
+export async function buildSearchDiagnostics(input) {
+  const { siteId, rangeKey } = input;
   const sql = db();
   const siteIds = siteId ? [siteId] : (await sql`SELECT id FROM sites`).map((r) => r.id);
-  const { start, end } = dateWindow(rangeKey);
+  const { start, end } = boundsFromInput(input);
 
   if (siteIds.length === 0) {
     return { range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey }, rows: [], insufficientData: { message: 'No sites available.' } };

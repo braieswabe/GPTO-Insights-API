@@ -130,7 +130,7 @@ function promptRowToPayload(row, latestObservation = null) {
   };
 }
 
-export async function buildLlmMentionsOverview({ siteId, days = 7, sources = ['chat_gpt', 'google_ai_overviews'] }) {
+export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, windowEnd, sources = ['chat_gpt', 'google_ai_overviews'] }) {
   const sql = db();
   if (!siteId) {
     const error = new Error('siteId is required for LLM Mentions overview');
@@ -138,8 +138,15 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, sources = ['c
     throw error;
   }
 
-  const since = new Date();
-  since.setDate(since.getDate() - Number(days || 7));
+  let since;
+  let until = new Date();
+  if (windowStart && windowEnd) {
+    since = new Date(windowStart);
+    until = new Date(windowEnd);
+  } else {
+    since = new Date();
+    since.setDate(since.getDate() - Number(days || 7));
+  }
 
   const [siteRows, authorityRows, rollups, observations, snapshots, prompts] = await Promise.all([
     sql`SELECT domain FROM sites WHERE id = ${siteId}::uuid LIMIT 1`,
@@ -156,6 +163,7 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, sources = ['c
       WHERE site_id = ${siteId}::uuid
         AND source = ANY(${sources}::text[])
         AND day >= ${since}
+        AND day <= ${until}
       ORDER BY day ASC
     `,
     sql`
@@ -166,6 +174,7 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, sources = ['c
       WHERE site_id = ${siteId}::uuid
         AND source = ANY(${sources}::text[])
         AND fetched_at >= ${since}
+        AND fetched_at <= ${until}
       ORDER BY fetched_at DESC
       LIMIT 100
     `,
@@ -174,6 +183,8 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, sources = ['c
       FROM llm_mentions_snapshots
       WHERE site_id = ${siteId}::uuid
         AND status = 'success'
+        AND fetched_at >= ${since}
+        AND fetched_at <= ${until}
       ORDER BY fetched_at DESC
       LIMIT 50
     `,

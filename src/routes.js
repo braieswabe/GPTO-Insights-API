@@ -15,6 +15,10 @@ import {
   runDashboardCronRefresh,
 } from './services/dashboard.js';
 import {
+  getTelemetryDailyRollupProgress,
+  postTelemetryDailyRollup,
+} from './services/telemetry-daily-rollup.js';
+import {
   patchTrackedPrompt,
   readLegacyLlmMentions,
   readLlmCompetitors,
@@ -99,6 +103,13 @@ export async function route(request) {
   if (method === 'POST' && url.pathname === '/internal/refresh/process') return processRefreshJobs(await readJson(request));
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/refresh') {
     return runDashboardCronRefresh(method === 'POST' ? await readJson(request) : {});
+  }
+
+  if (method === 'POST' && url.pathname === '/internal/rollup/telemetry-daily') {
+    return postTelemetryDailyRollup(request, await readJson(request));
+  }
+  if (method === 'GET' && url.pathname === '/internal/rollup/telemetry-daily/progress') {
+    return getTelemetryDailyRollupProgress(request);
   }
 
   return { status: 404, body: { error: 'Not found' } };

@@ -11,7 +11,7 @@ import { buildExecutiveSummary } from './executive-summary.js';
 import { buildAiReadability } from './ai-readability.js';
 import { buildLlmMentionsOverview } from './llm-mentions.js';
 import { buildDashboardOverview } from './dashboard-overview.js';
-import { rangeToDays } from '../types.js';
+import { boundsDaySpan, boundsFromInput } from '../dashboard-range.js';
 
 export { buildDashboardOverview } from './dashboard-overview.js';
 export { buildLlmMentionsOverview, buildLlmMentionsTrends, buildLlmMentionsCompetitors, buildLlmMentionsPromptIntelligence, buildLlmMentionsSourceGap } from './llm-mentions.js';
@@ -30,10 +30,14 @@ export async function buildModule(moduleKey, input) {
   if (moduleKey === 'executive_summary') return buildExecutiveSummary(input);
   if (moduleKey === 'ai_readability') return buildAiReadability(input);
   if (moduleKey === 'llm_mentions_overview') {
+    const { start, end } = boundsFromInput(input);
+    const spanDays = boundsDaySpan({ start, end });
     return buildLlmMentionsOverview({
       siteId: input.siteId,
-      days: rangeToDays(input.rangeKey),
-      sources: ['chat_gpt', 'google_ai_overviews'],
+      days: Number(input.params?.days || spanDays),
+      windowStart: start,
+      windowEnd: end,
+      sources: Array.isArray(input.params?.sources) ? input.params.sources : ['chat_gpt', 'google_ai_overviews'],
     });
   }
   const error = new Error(`Unsupported module: ${moduleKey}`);

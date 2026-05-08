@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 
-export async function buildIndex({ siteId, rangeKey }) {
+export async function buildIndex(input) {
+  const { siteId, rangeKey } = input;
   const sql = db();
 
   const sites = siteId
