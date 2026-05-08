@@ -6,6 +6,10 @@ export function refreshCooldownSeconds() {
   return Number(process.env.DASHBOARD_REFRESH_COOLDOWN_SECONDS || 300);
 }
 
+export function refreshJobSiteIdValue(identity) {
+  return identity.siteId || null;
+}
+
 export async function enqueueRefreshJob(identity, options = {}) {
   const sql = db();
   const cooldownSeconds = options.cooldownSeconds ?? refreshCooldownSeconds();
@@ -43,7 +47,7 @@ export async function enqueueRefreshJob(identity, options = {}) {
     }
   }
 
-  const siteIdValue = identity.siteId || EMPTY_SITE_UUID;
+  const siteIdValue = refreshJobSiteIdValue(identity);
   const rows = await sql`
     INSERT INTO dashboard_refresh_jobs (
       site_id, portal_scope, module_key, range_key,

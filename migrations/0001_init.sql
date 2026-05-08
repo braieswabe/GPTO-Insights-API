@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS dashboard_refresh_jobs (
 
 -- Add ALL columns that may be missing if the table was created by an older migration
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS site_id uuid NULL;
+ALTER TABLE dashboard_refresh_jobs ALTER COLUMN site_id DROP NOT NULL;
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS portal_scope varchar(40) NOT NULL DEFAULT 'employee';
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS module_key varchar(120) NOT NULL DEFAULT '';
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS range_key varchar(40) NOT NULL DEFAULT '7d';
