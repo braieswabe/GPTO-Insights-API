@@ -33,6 +33,8 @@ The server starts at `http://127.0.0.1:4011`.
 | `TELEMETRY_ROLLUP_MAX_SPAN_DAYS` | No | Max UTC days per `POST /internal/rollup/telemetry-daily` (default `366`) |
 | `TELEMETRY_ROLLUP_MAX_SITES` | No | Max sites per manual rollup POST (default `80`) |
 | `TELEMETRY_ROLLUP_MAX_RUNS` | No | Max site×day jobs per manual rollup POST (default `500`) |
+| `DASHBOARD_TELEMETRY_CONNECTED_MS` | No | Milliseconds of telemetry freshness required for `sitesList[].dataConnection === connected` (default 1h) |
+| `DASHBOARD_TELEMETRY_STALE_MS` | No | Milliseconds after last event before `disconnected` (default 24h; must be ≥ connected window) |
 
 ## API Endpoints
 
@@ -94,7 +96,9 @@ Deploy as a standalone Vercel project. Set environment variables in Vercel proje
 vercel --prod
 ```
 
-The Vercel cron job refreshes cache every 15 minutes automatically (`/api/internal/cron/refresh`). A second cron (`/api/internal/cron/rollup-telemetry`, default `5 2 * * *` UTC) materializes **daily telemetry rollups** from `telemetry_events` into `dashboard_rollups_daily` and records progress in `dashboard_telemetry_daily_rollup_progress` so custom dashboard date ranges have underlying facts.
+The Vercel cron job refreshes dashboard cache **hourly** (`0 * * * *` UTC → `/api/internal/cron/refresh`). Overview and stats cache TTLs are **one hour** to match. A second cron (`/api/internal/cron/rollup-telemetry`, default `5 2 * * *` UTC) materializes **daily telemetry rollups** from `telemetry_events` into `dashboard_rollups_daily` and records progress in `dashboard_telemetry_daily_rollup_progress` so custom dashboard date ranges have underlying facts.
+
+Dashboard `sitesList` entries include `lastTelemetryAt`, `hasActiveConfig`, and `dataConnection`, keyed to the same `sites.id` as `telemetry_events.site_id`. Migration `0003_sites_last_telemetry_at.sql` adds `sites.last_telemetry_at`, backfills from events, and rollups keep it updated alongside rollup progress.
 
 Daily boundaries are **UTC calendar days** (`day` stored as `00:00:00Z` for that date).
 

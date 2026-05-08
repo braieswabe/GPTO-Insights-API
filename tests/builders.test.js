@@ -21,6 +21,8 @@ describe('types constants', () => {
   });
 
   it('ttlForModule returns correct TTLs', () => {
+    assert.equal(ttlForModule('overview'), 60 * 60);
+    assert.equal(ttlForModule('stats'), 60 * 60);
     assert.equal(ttlForModule('telemetry'), 15 * 60);
     assert.equal(ttlForModule('authority'), 30 * 60);
     assert.equal(ttlForModule('coverage'), 60 * 60);

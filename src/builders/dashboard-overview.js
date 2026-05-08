@@ -1,4 +1,5 @@
 import { db } from '../db.js';
+import { loadSitesWithConnectionFields } from '../site-connection.js';
 import { boundsDaySpan, boundsFromInput } from '../dashboard-range.js';
 import { buildTelemetry } from './telemetry.js';
 import { buildAuthority } from './authority.js';
@@ -15,15 +16,9 @@ import { buildLlmMentionsOverview } from './llm-mentions.js';
 
 export { buildIndex, buildAiReadability };
 
-function iso(value) {
-  return value ? new Date(value).toISOString() : null;
-}
-
 export async function buildDashboardOverview(input) {
   const sql = db();
-  const sites = input.siteId
-    ? await sql`SELECT id, domain, status, created_at, updated_at FROM sites WHERE id = ${input.siteId}::uuid`
-    : await sql`SELECT id, domain, status, created_at, updated_at FROM sites ORDER BY domain ASC`;
+  const sitesList = await loadSitesWithConnectionFields(sql, input.siteId);
 
   const [telemetry, authority, executiveSummary, experience, searchDiagnostics, confusion, coverage, schema, journey, indexData, aiReadability] =
     await Promise.all([
@@ -54,14 +49,8 @@ export async function buildDashboardOverview(input) {
   }
 
   return {
-    sites: sites.length,
-    sitesList: sites.map((s) => ({
-      id: s.id,
-      domain: s.domain,
-      status: s.status,
-      createdAt: iso(s.created_at),
-      updatedAt: iso(s.updated_at),
-    })),
+    sites: sitesList.length,
+    sitesList,
     telemetry,
     authority,
     executiveSummary,

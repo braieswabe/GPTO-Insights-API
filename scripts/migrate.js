@@ -19,7 +19,7 @@ if (!connectionString) {
 const sql = postgres(connectionString, { ssl: 'require', max: 1 });
 
 async function run() {
-  const migrations = ['0001_init.sql', '0002_telemetry_daily_rollups.sql'];
+  const migrations = ['0001_init.sql', '0002_telemetry_daily_rollups.sql', '0003_sites_last_telemetry_at.sql'];
   for (const name of migrations) {
     const migrationPath = resolve(process.cwd(), 'migrations', name);
     const migration = readFileSync(migrationPath, 'utf8');

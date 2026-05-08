@@ -18,7 +18,7 @@ export const DASHBOARD_MODULES = [
 ];
 
 export const MODULE_TTL_SECONDS = {
-  overview: 15 * 60,
+  overview: 60 * 60,
   telemetry: 15 * 60,
   index: 15 * 60,
   authority: 30 * 60,
@@ -32,7 +32,7 @@ export const MODULE_TTL_SECONDS = {
   ai_readability: 60 * 60,
   llm_mentions_overview: 6 * 60 * 60,
   gold: 30 * 60,
-  stats: 15 * 60,
+  stats: 60 * 60,
   export_data: 30 * 60,
 };
 

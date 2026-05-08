@@ -115,6 +115,19 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
     WHERE site_id = ${siteId}::uuid AND day = ${dayIso}::date
   `;
 
+  if (agg?.max_event_timestamp) {
+    await tx`
+      UPDATE sites
+      SET
+        last_telemetry_at = GREATEST(
+          COALESCE(last_telemetry_at, to_timestamp(0)),
+          ${agg.max_event_timestamp}
+        ),
+        updated_at = NOW()
+      WHERE id = ${siteId}::uuid
+    `;
+  }
+
   return {
     skipped: false,
     siteId,

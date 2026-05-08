@@ -7,7 +7,7 @@ WHERE a.ctid IN (
   SELECT ctid FROM (
     SELECT ctid,
            ROW_NUMBER() OVER (
-             PARTITION BY site_id, ((timezone('UTC', day))::date)
+             PARTITION BY site_id, ((day::timestamp AT TIME ZONE 'UTC')::date)
              ORDER BY created_at DESC NULLS LAST, id::text DESC
            ) AS rn
     FROM dashboard_rollups_daily
@@ -16,7 +16,7 @@ WHERE a.ctid IN (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS dashboard_rollups_daily_site_utc_day_uniq
-ON dashboard_rollups_daily (site_id, ((timezone('UTC', day))::date));
+ON dashboard_rollups_daily (site_id, ((day::timestamp AT TIME ZONE 'UTC')::date));
 
 CREATE TABLE IF NOT EXISTS dashboard_telemetry_daily_rollup_progress (
   site_id uuid NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
