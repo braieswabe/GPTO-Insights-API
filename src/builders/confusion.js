@@ -95,9 +95,24 @@ export async function buildConfusion(input) {
       { key: 'drop_off', label: 'Drop-offs', count: totalForType('drop_off'), evidenceUrls: [] },
       { key: 'intent_mismatch', label: 'Intent mismatches', count: totalForType('intent_mismatch'), evidenceUrls: [] },
     ].filter((rc) => rc.count > 0),
-    recommendedFixes: totalForType('drop_off') > 0
-      ? ['Reduce early drop-offs by tightening page clarity above the fold and improving internal navigation.']
-      : [],
+    recommendedFixes: deriveConfusionFixes(rows.find((r) => r.type === 'drop_off'), totalForType),
     confidence: { level: score >= 80 ? 'High' : score >= 50 ? 'Medium' : score > 0 ? 'Low' : 'Unknown', score },
   };
+}
+
+function deriveConfusionFixes(_dropOffRow, totalForType) {
+  const fixes = [];
+  if (totalForType('drop_off') > 0) {
+    fixes.push('Reduce early drop-offs by tightening page clarity above the fold and improving internal navigation.');
+  }
+  if (totalForType('repeated_search') > 0) {
+    fixes.push('Add direct answers and content for the queries visitors keep retrying so the search results page becomes the destination.');
+  }
+  if (totalForType('dead_end') > 0) {
+    fixes.push('Review the URLs that dead-end most often: add follow-on CTAs, related links, or stronger internal navigation.');
+  }
+  if (totalForType('intent_mismatch') > 0) {
+    fixes.push('Reconcile pages flagged for intent mismatches by aligning H1, lead paragraph, and CTA with the search query.');
+  }
+  return fixes.slice(0, 4);
 }

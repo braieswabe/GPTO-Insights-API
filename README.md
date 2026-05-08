@@ -35,6 +35,14 @@ The server starts at `http://127.0.0.1:4011`.
 | `TELEMETRY_ROLLUP_MAX_RUNS` | No | Max site×day jobs per manual rollup POST (default `500`) |
 | `DASHBOARD_TELEMETRY_CONNECTED_MS` | No | Milliseconds of telemetry freshness required for `sitesList[].dataConnection === connected` (default 1h) |
 | `DASHBOARD_TELEMETRY_STALE_MS` | No | Milliseconds after last event before `disconnected` (default 24h; must be ≥ connected window) |
+| `OPENAI_API_KEY` | No (yes for `/v1/dashboard/ai-report`) | OpenAI key used by the AI Report service to generate executive narratives |
+| `OPENAI_MODEL` | No | Override OpenAI model for AI Report (default `gpt-4o-mini`) |
+| `OPENAI_TEMPERATURE` | No | OpenAI sampling temperature (default `0.7`) |
+| `OPENAI_MAX_TOKENS` | No | OpenAI max output tokens (default `2000`) |
+| `OPENAI_API_URL` | No | Override the OpenAI chat completions endpoint (useful for proxies) |
+| `CSUITE_TARGET_AUTHORITY` | No | Authority score target for `/v1/dashboard/csuite` (default `90`) |
+| `CSUITE_TARGET_SENTIMENT` | No | Sentiment score target for `/v1/dashboard/csuite` (default `80`) |
+| `CSUITE_TARGET_AI_VISIBILITY` | No | AI Search Visibility target for `/v1/dashboard/csuite` (default `90`) |
 
 ## API Endpoints
 
@@ -46,6 +54,10 @@ The server starts at `http://127.0.0.1:4011`.
 - `GET /v1/dashboard/module/:moduleKey` – single module data
 - `GET /v1/dashboard/gold` – client-facing Gold dashboard payload
 - `GET /v1/dashboard/stats` – dashboard stats payload
+- `GET /v1/dashboard/csuite` – C-suite executive metrics (authority, sentiment, AI search visibility, competitor rank, monthly growth)
+- `GET /v1/dashboard/csuite/monthly-insights` – month-by-month C-suite insights stream
+- `GET /v1/dashboard/ai-report` – cached AI-generated executive narrative report
+- `POST /v1/dashboard/ai-report` – regenerate AI report (`{ force: true }` to bypass cache)
 - `GET /v1/dashboard/export-data` – consolidated export/report source data
 - `GET /v1/llm-mentions/overview` – LLM mentions aggregation
 - `GET /v1/llm-mentions/bundle` – page-ready LLM Mentions bundle

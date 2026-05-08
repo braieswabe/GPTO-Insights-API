@@ -7,6 +7,22 @@ function average(values) {
   return Math.round(clean.reduce((sum, v) => sum + v, 0) / clean.length);
 }
 
+function emptyCoverage(rangeKey, start, end, message) {
+  return {
+    range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
+    totals: { contentGaps: 0, missingFunnelStages: 0, missingIntents: 0, priorityFixes: 0 },
+    gaps: [],
+    missingStages: [],
+    missingIntents: [],
+    priorityItems: [],
+    stageBreakdown: [],
+    recommendedFixes: [],
+    confidence: { level: 'Unknown', score: 0 },
+    riskBand: 'unknown',
+    insufficientData: { message },
+  };
+}
+
 export async function buildCoverage(input) {
   const { siteId, rangeKey } = input;
   const sql = db();
@@ -14,13 +30,7 @@ export async function buildCoverage(input) {
   const { start, end } = boundsFromInput(input);
 
   if (siteIds.length === 0) {
-    return {
-      totals: { contentGaps: 0, missingFunnelStages: 0, missingIntents: 0, priorityFixes: 0 },
-      gaps: [],
-      missingStages: [],
-      missingIntents: [],
-      confidence: { level: 'Unknown', score: 0 },
-    };
+    return emptyCoverage(rangeKey, start, end, 'No sites available.');
   }
 
   const rows = await sql`
@@ -33,7 +43,9 @@ export async function buildCoverage(input) {
     LIMIT 50
   `;
 
-  if (rows.length === 0) return null;
+  if (rows.length === 0) {
+    return emptyCoverage(rangeKey, start, end, 'No coverage signals available for this range yet.');
+  }
 
   const confidenceScore = average(rows.map((r) => r.confidence));
   const allGaps = rows.flatMap((r) => (Array.isArray(r.gaps) ? r.gaps : []));
@@ -43,13 +55,16 @@ export async function buildCoverage(input) {
   const uniqueStages = [...new Set(allMissingStages)];
   const priorityItems = allGaps.filter((g) => g.severity === 'high' || g.severity === 'critical');
 
+  const totals = {
+    contentGaps: allGaps.length,
+    missingFunnelStages: uniqueStages.length,
+    missingIntents: uniqueIntents.length,
+    priorityFixes: priorityItems.length,
+  };
+
   return {
-    totals: {
-      contentGaps: allGaps.length,
-      missingFunnelStages: uniqueStages.length,
-      missingIntents: uniqueIntents.length,
-      priorityFixes: priorityItems.length,
-    },
+    range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
+    totals,
     gaps: allGaps.map((g) => ({
       label: String(g.label ?? g.name ?? 'Gap'),
       detail: String(g.detail ?? g.description ?? ''),
@@ -78,5 +93,17 @@ export async function buildCoverage(input) {
       level: confidenceScore >= 80 ? 'High' : confidenceScore >= 50 ? 'Medium' : confidenceScore > 0 ? 'Low' : 'Unknown',
       score: confidenceScore,
     },
+    riskBand: deriveCoverageRiskBand(totals),
   };
+}
+
+export function deriveCoverageRiskBand(totals) {
+  if (!totals) return 'unknown';
+  const priority = Number(totals.priorityFixes || 0);
+  const missingStages = Number(totals.missingFunnelStages || 0);
+  const contentGaps = Number(totals.contentGaps || 0);
+  if (priority >= 5 || missingStages >= 3) return 'high';
+  if (priority >= 2 || missingStages >= 1 || contentGaps >= 5) return 'medium';
+  if (contentGaps > 0 || priority > 0) return 'low';
+  return 'minimal';
 }

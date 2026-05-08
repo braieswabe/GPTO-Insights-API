@@ -1,7 +1,161 @@
 import { db } from '../db.js';
+import {
+  LLM_INTERNAL_WEIGHT,
+  LLM_VISIBILITY_WEIGHTS,
+  buildInternalBucket,
+  buildWeightedBucket,
+  clampScore,
+  compositeFromBreakdown,
+  computeAnswerEvidenceFromExamples,
+  computeCitationCoverageScore,
+  computeCompetitiveScore,
+  computeInternalReadinessScore,
+  computeReachScore,
+  getScoreBand,
+  hasPositiveLlmMetrics,
+  isSiteDomainMatch,
+} from '../lib/scoring.js';
+import { buildEvidenceSuggestions } from '../lib/answer-evidence.js';
 
 function iso(value) {
   return value ? new Date(value).toISOString() : null;
+}
+
+function ageDaysFrom(now, iso) {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  const diff = (now.getTime() - ms) / 86_400_000;
+  return diff < 0 ? 0 : diff;
+}
+
+function freshnessState(ageDays) {
+  if (ageDays === null) return 'missing';
+  if (ageDays > 30) return 'expired';
+  if (ageDays > 7) return 'stale';
+  return 'fresh';
+}
+
+function freshnessMultiplier(ageDays) {
+  if (ageDays === null) return 0;
+  if (ageDays > 30) return 0;
+  if (ageDays > 7) return 0.5;
+  return 1;
+}
+
+function endpointCoverage(endpoint, snapshot, now) {
+  const ageDays = ageDaysFrom(now, snapshot?.fetchedAt || null);
+  return {
+    endpoint,
+    matched: Boolean(snapshot),
+    targetType: snapshot?.targetType ?? null,
+    targetKey: snapshot?.targetKey ?? null,
+    fetchedAt: snapshot?.fetchedAt || null,
+    ageDays,
+    freshness: freshnessState(ageDays),
+    weightMultiplier: freshnessMultiplier(ageDays),
+    sourceContext: snapshot?.sourceContext || null,
+  };
+}
+
+function summarizeFreshness(latestAt, sourceContext, now) {
+  const ageDays = ageDaysFrom(now, latestAt);
+  const state = freshnessState(ageDays);
+  const ageRound = ageDays !== null ? Math.round(ageDays) : null;
+  let summary;
+  if (state === 'missing') {
+    summary = 'No scoring-eligible LLM Mentions snapshots are available for this site yet.';
+  } else if (state === 'expired') {
+    summary = `Latest LLM Mentions evidence is older than 30 days${ageRound != null ? ` (${ageRound} days old)` : ''} and is excluded from scoring.`;
+  } else if (state === 'stale') {
+    summary = `Latest LLM Mentions evidence is ${ageRound != null ? `${ageRound} days old` : 'stale'} and counts at half weight.`;
+  } else if (sourceContext === 'manual') {
+    summary = 'Latest LLM Mentions score is driven by manual site-matching snapshots.';
+  } else if (sourceContext === 'mixed') {
+    summary = 'Latest LLM Mentions score blends scheduled and manual site-matching snapshots.';
+  } else {
+    summary = 'Latest LLM Mentions score is fresh and driven by stored site-matching snapshots.';
+  }
+  return {
+    state,
+    ageDays,
+    weightMultiplier: freshnessMultiplier(ageDays),
+    stale: state === 'stale' || state === 'expired',
+    summary,
+    lastUpdatedAt: latestAt || null,
+    sourceContext: sourceContext || null,
+  };
+}
+
+function summarizeSourceContexts(rows = []) {
+  const groups = new Set();
+  for (const row of rows) {
+    const ctx = row?.sourceContext;
+    if (!ctx) continue;
+    if (ctx === 'manual' || ctx === 'suggestion') groups.add('manual');
+    else groups.add('cron');
+  }
+  if (groups.size === 0) return null;
+  if (groups.size > 1) return 'mixed';
+  return groups.has('manual') ? 'manual' : 'cron';
+}
+
+function buildSignals(internal, external, breakdown, freshness) {
+  const signals = [];
+  const mentions = external?.mentions ?? 0;
+  const aiVolume = external?.aiSearchVolume ?? 0;
+  const authority = internal?.authorityScore ?? null;
+  const schema = internal?.schemaCompletenessScore ?? null;
+
+  if (freshness?.state === 'expired') {
+    signals.push({ id: 'expired_snapshots', level: 'warn', message: 'Latest LLM Mentions snapshots are older than 30 days and are excluded from score weighting.' });
+  } else if (freshness?.state === 'stale') {
+    signals.push({ id: 'stale_snapshots', level: 'info', message: 'Latest LLM Mentions snapshots are older than 7 days and only count at half weight.' });
+  }
+
+  if (mentions <= 0 && aiVolume > 50) {
+    signals.push({ id: 'zero_mentions_high_demand', level: 'critical', message: `AI search volume is ${Math.round(aiVolume)} but the brand has zero captured mentions — major gap between demand and visibility.` });
+  }
+
+  if (authority !== null && authority >= 60 && mentions <= 0) {
+    signals.push({ id: 'strong_authority_weak_mentions', level: 'warn', message: `Authority score is ${Math.round(authority)}/100 but the brand is not surfacing in LLM answers. Amplify first-party schema + sources.` });
+  }
+
+  if (schema !== null && schema < 50 && mentions > 0) {
+    signals.push({ id: 'weak_schema_with_mentions', level: 'warn', message: `Brand is being mentioned (${mentions}) but schema completeness is only ${Math.round(schema)}%. LLMs may misattribute or drop sources.` });
+  }
+
+  if (typeof external?.shareOfVoice === 'number' && external.shareOfVoice < 0.15 && (external.competitorComparison || []).length > 1) {
+    signals.push({ id: 'low_share_of_voice', level: 'warn', message: `Share of voice vs competitors is only ${Math.round(external.shareOfVoice * 100)}%. Prioritize authority and FAQ coverage.` });
+  }
+
+  if (breakdown?.answerEvidence?.score === 0 && (external?.searchExamples || []).length > 0) {
+    signals.push({ id: 'search_without_self_citations', level: 'warn', message: 'Search evidence exists, but the brand is not being cited directly in sampled AI answers.' });
+  }
+
+  if (signals.length === 0) {
+    signals.push({ id: 'baseline', level: 'info', message: 'No critical visibility gaps detected in the most recent site-matching snapshot set.' });
+  }
+
+  return signals;
+}
+
+function buildNarrative(composite, internal, external, freshness) {
+  if (composite === null) {
+    return 'AI Visibility is not yet computable — no site-matching DataForSEO snapshots or internal readiness signals are available for this site.';
+  }
+  const mentions = external?.mentions ?? 0;
+  const authority = internal?.authorityScore ?? 0;
+  const freshnessSuffix =
+    freshness?.state === 'stale'
+      ? ' Snapshot freshness is aging, so the score is partially discounted.'
+      : freshness?.state === 'expired'
+        ? ' Current score excludes expired snapshots older than 30 days.'
+        : '';
+  if (composite >= 75) return `Strong AI Visibility (${composite}/100). ${mentions} tracked mentions and ${authority}/100 authority are compounding — maintain schema, keep refreshing topical coverage, and protect the pages already cited by AI systems.${freshnessSuffix}`;
+  if (composite >= 50) return `Moderate AI Visibility (${composite}/100). Authority is ${authority}/100 and the brand is appearing in AI snapshots, but citation coverage and answer evidence still need tightening.${freshnessSuffix}`;
+  if (composite >= 25) return `Low AI Visibility (${composite}/100). External AI surfaces are not picking up the brand reliably; focus on authoritative, schema-rich pages and content aligned to cited prompts.${freshnessSuffix}`;
+  return `Critical AI Visibility gap (${composite}/100). Brand visibility in AI answers is still weak relative to observed demand, so the next lift should come from technical trust fixes and high-signal content expansion.${freshnessSuffix}`;
 }
 
 function sourceFromSnapshot(row) {
@@ -45,70 +199,122 @@ function latestBySource(rows, sources) {
     .filter(Boolean);
 }
 
-function confidenceFreshness(latestSnapshotAt) {
-  return {
-    state: latestSnapshotAt ? 'fresh' : 'missing',
-    ageDays: null,
-    weightMultiplier: latestSnapshotAt ? 1 : 0,
-    stale: !latestSnapshotAt,
-    summary: `Combined AI source snapshots. Latest refresh: ${
-      latestSnapshotAt ? new Date(latestSnapshotAt).toLocaleString() : 'not available'
-    }.`,
-    lastUpdatedAt: latestSnapshotAt,
-    sourceContext: 'mixed',
-  };
+function buildShareOfVoice(siteDomain, comparison = []) {
+  if (!siteDomain || !Array.isArray(comparison) || comparison.length === 0) return null;
+  const self = comparison.find((row) => isSiteDomainMatch(row?.target || row?.domain, siteDomain));
+  if (!self) return null;
+  if (typeof self.shareOfVoice === 'number' && Number.isFinite(self.shareOfVoice)) return self.shareOfVoice;
+  const total = comparison.reduce((sum, row) => sum + Number(row?.aiSearchVolume || row?.mentions || 0), 0);
+  if (total <= 0) return null;
+  const selfTotal = Number(self.aiSearchVolume || self.mentions || 0);
+  return selfTotal > 0 ? selfTotal / total : null;
 }
 
-function scoreBucket(score, redistributedWeight) {
-  return {
-    score,
-    redistributedWeight,
-    freshnessMultiplier: score === null ? 0 : 1,
-    contribution: score === null ? null : score * redistributedWeight,
-  };
+function buildSnapshotMap(snapshots = []) {
+  const map = new Map();
+  for (const row of snapshots) {
+    if (!row?.endpoint) continue;
+    const existing = map.get(row.endpoint);
+    if (!existing || (row.fetchedAt && existing.fetchedAt && new Date(row.fetchedAt) > new Date(existing.fetchedAt))) {
+      map.set(row.endpoint, row);
+    }
+  }
+  return map;
 }
 
-function buildAiVisibility({ summary, authorityScore, latestSnapshotAt }) {
-  const hasAnswerEvidence = (summary.searchExamples || []).length > 0;
+function buildAiVisibility({
+  summary,
+  siteDomain,
+  competitorComparison = [],
+  internalInputs = {},
+  snapshotsByEndpoint = new Map(),
+  latestSnapshotAt = null,
+  freshnessSourceContext = null,
+  now = new Date(),
+}) {
+  const internal = {
+    authorityScore: internalInputs.authorityScore ?? null,
+    schemaCompletenessScore: internalInputs.schemaCompletenessScore ?? null,
+    confusionScore: internalInputs.confusionScore ?? null,
+    coverageScore: internalInputs.coverageScore ?? null,
+    aiSearchScore: internalInputs.aiSearchScore ?? null,
+  };
+
+  const shareOfVoice = buildShareOfVoice(siteDomain, competitorComparison);
+  const external = {
+    mentions: summary.metrics.mentions,
+    aiSearchVolume: summary.metrics.aiSearchVolume,
+    impressions: summary.metrics.impressions,
+    shareOfVoice,
+    topDomains: summary.topDomains || [],
+    topPages: summary.topPages || [],
+    searchExamples: summary.searchExamples || [],
+    competitorComparison,
+    metrics: summary.metrics,
+    lastUpdatedAt: summary.lastUpdatedAt,
+  };
+
+  const reachScore = computeReachScore(external.metrics);
+  const citationScore = computeCitationCoverageScore({
+    topDomains: external.topDomains,
+    topPages: external.topPages,
+    siteDomain,
+  });
+  const competitiveScore = computeCompetitiveScore(external.shareOfVoice);
+  const answerEvidenceScore = computeAnswerEvidenceFromExamples(external.searchExamples, siteDomain);
+  const internalReadiness = computeInternalReadinessScore(internal);
+
+  const coverage = {
+    aggregated_metrics: endpointCoverage('aggregated_metrics', snapshotsByEndpoint.get('aggregated_metrics'), now),
+    top_domains: endpointCoverage('top_domains', snapshotsByEndpoint.get('top_domains'), now),
+    top_pages: endpointCoverage('top_pages', snapshotsByEndpoint.get('top_pages'), now),
+    cross_aggregated_metrics: endpointCoverage('cross_aggregated_metrics', snapshotsByEndpoint.get('cross_aggregated_metrics'), now),
+    search: endpointCoverage('search', snapshotsByEndpoint.get('search'), now),
+  };
+
+  const llmAvailableBaseWeight =
+    (reachScore !== null ? LLM_VISIBILITY_WEIGHTS.reach : 0) +
+    (citationScore !== null ? LLM_VISIBILITY_WEIGHTS.citationCoverage : 0) +
+    (competitiveScore !== null ? LLM_VISIBILITY_WEIGHTS.competitivePosition : 0) +
+    (answerEvidenceScore !== null ? LLM_VISIBILITY_WEIGHTS.answerEvidence : 0);
+
+  const reachFreshness = coverage.aggregated_metrics.weightMultiplier;
+  const citationFreshness = Math.max(coverage.top_domains.weightMultiplier, coverage.top_pages.weightMultiplier);
+  const competitiveFreshness = coverage.cross_aggregated_metrics.weightMultiplier;
+  const searchFreshness = coverage.search.weightMultiplier;
+
+  const breakdown = {
+    reach: buildWeightedBucket(reachScore, LLM_VISIBILITY_WEIGHTS.reach, llmAvailableBaseWeight, reachFreshness || 1),
+    citationCoverage: buildWeightedBucket(citationScore, LLM_VISIBILITY_WEIGHTS.citationCoverage, llmAvailableBaseWeight, citationFreshness || 1),
+    competitivePosition: buildWeightedBucket(competitiveScore, LLM_VISIBILITY_WEIGHTS.competitivePosition, llmAvailableBaseWeight, competitiveFreshness || 1),
+    answerEvidence: buildWeightedBucket(answerEvidenceScore, LLM_VISIBILITY_WEIGHTS.answerEvidence, llmAvailableBaseWeight, searchFreshness || 1),
+    internalReadiness: buildInternalBucket(internalReadiness),
+  };
+
+  const rawComposite = compositeFromBreakdown(breakdown);
+  const evidenceFallback = computeReachScore(external.metrics);
+  const composite =
+    rawComposite === 0 && hasPositiveLlmMetrics(external.metrics) && evidenceFallback !== null
+      ? evidenceFallback
+      : rawComposite;
+
+  const sourceContext = freshnessSourceContext || summarizeSourceContexts(Array.from(snapshotsByEndpoint.values()));
+  const freshness = summarizeFreshness(latestSnapshotAt, sourceContext, now);
+  const signals = buildSignals(internal, external, breakdown, freshness);
+  const narrative = buildNarrative(composite, internal, external, freshness);
+
   return {
-    internal: {
-      authorityScore,
-      schemaCompletenessScore: null,
-      confusionScore: null,
-      coverageScore: null,
-      aiSearchScore: null,
-    },
-    external: {
-      mentions: summary.metrics.mentions,
-      aiSearchVolume: summary.metrics.aiSearchVolume,
-      impressions: summary.metrics.impressions,
-      shareOfVoice: null,
-      topDomains: summary.topDomains || [],
-      topPages: summary.topPages || [],
-      searchExamples: summary.searchExamples || [],
-      competitorComparison: [],
-      metrics: summary.metrics,
-      lastUpdatedAt: summary.lastUpdatedAt,
-    },
-    composite: 0,
-    narrative: 'Search evidence exists, but the brand is not being cited directly in sampled AI answers.',
-    signals: [],
-    breakdown: {
-      reach: scoreBucket(null, 0),
-      citationCoverage: scoreBucket(null, 0),
-      competitivePosition: scoreBucket(null, 0),
-      answerEvidence: scoreBucket(hasAnswerEvidence ? 0 : null, hasAnswerEvidence ? 90 : 0),
-      internalReadiness: scoreBucket(0, 10),
-    },
-    freshness: confidenceFreshness(latestSnapshotAt),
-    coverage: {
-      aggregated_metrics: { endpoint: 'aggregated_metrics', matched: true, targetType: null, targetKey: null, fetchedAt: latestSnapshotAt, ageDays: null, freshness: latestSnapshotAt ? 'fresh' : 'missing', weightMultiplier: latestSnapshotAt ? 1 : 0, sourceContext: null },
-      top_domains: { endpoint: 'top_domains', matched: true, targetType: null, targetKey: null, fetchedAt: latestSnapshotAt, ageDays: null, freshness: latestSnapshotAt ? 'fresh' : 'missing', weightMultiplier: latestSnapshotAt ? 1 : 0, sourceContext: null },
-      top_pages: { endpoint: 'top_pages', matched: true, targetType: null, targetKey: null, fetchedAt: latestSnapshotAt, ageDays: null, freshness: latestSnapshotAt ? 'fresh' : 'missing', weightMultiplier: latestSnapshotAt ? 1 : 0, sourceContext: null },
-      cross_aggregated_metrics: { endpoint: 'cross_aggregated_metrics', matched: false, targetType: null, targetKey: null, fetchedAt: null, ageDays: null, freshness: 'missing', weightMultiplier: 0, sourceContext: null },
-      search: { endpoint: 'search', matched: hasAnswerEvidence, targetType: null, targetKey: null, fetchedAt: latestSnapshotAt, ageDays: null, freshness: hasAnswerEvidence ? 'fresh' : 'missing', weightMultiplier: hasAnswerEvidence ? 1 : 0, sourceContext: null },
-    },
-    sourceContext: 'mixed',
+    internal,
+    external,
+    composite,
+    band: getScoreBand(composite),
+    narrative,
+    signals,
+    breakdown,
+    freshness,
+    coverage,
+    sourceContext,
+    weights: { ...LLM_VISIBILITY_WEIGHTS, internalReadiness: LLM_INTERNAL_WEIGHT },
   };
 }
 
@@ -130,7 +336,14 @@ function promptRowToPayload(row, latestObservation = null) {
   };
 }
 
-export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, windowEnd, sources = ['chat_gpt', 'google_ai_overviews'] }) {
+export async function buildLlmMentionsOverview({
+  siteId,
+  days = 7,
+  windowStart,
+  windowEnd,
+  sources = ['chat_gpt', 'google_ai_overviews'],
+  internalInputs: internalInputsOverride = null,
+}) {
   const sql = db();
   if (!siteId) {
     const error = new Error('siteId is required for LLM Mentions overview');
@@ -148,7 +361,7 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, 
     since.setDate(since.getDate() - Number(days || 7));
   }
 
-  const [siteRows, authorityRows, rollups, observations, snapshots, prompts] = await Promise.all([
+  const [siteRows, authorityRows, rollups, observations, snapshots, prompts, schemaEvents, confusionRows, coverageRows] = await Promise.all([
     sql`SELECT domain FROM sites WHERE id = ${siteId}::uuid LIMIT 1`,
     sql`
       SELECT authority_score
@@ -196,9 +409,44 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, 
       ORDER BY created_at ASC
       LIMIT 100
     `,
+    sql`
+      SELECT metrics
+      FROM telemetry_events
+      WHERE site_id = ${siteId}::uuid
+        AND timestamp >= ${since}
+        AND timestamp <= ${until}
+      LIMIT 200
+    `.catch(() => []),
+    sql`
+      SELECT score
+      FROM confusion_signals
+      WHERE site_id = ${siteId}::uuid
+        AND window_end >= ${since}
+        AND window_start <= ${until}
+      LIMIT 50
+    `.catch(() => []),
+    sql`
+      SELECT gaps
+      FROM coverage_signals
+      WHERE site_id = ${siteId}::uuid
+        AND window_end >= ${since}
+        AND window_start <= ${until}
+      LIMIT 50
+    `.catch(() => []),
   ]);
 
+  const snapshotsList = snapshots.map((r) => ({
+    endpoint: r.endpoint,
+    targetKey: r.target_key,
+    source: r.source,
+    sourceContext: r.source_context,
+    fetchedAt: iso(r.fetched_at),
+    expiresAt: iso(r.expires_at),
+  }));
+  const snapshotsByEndpoint = buildSnapshotMap(snapshotsList);
   const latestSnapshotAt = iso(snapshots[0]?.fetched_at);
+  const freshnessSourceContext = summarizeSourceContexts(snapshotsList);
+
   const latestSearchSnapshots = latestBySource(snapshots.filter((row) => row.endpoint === 'search'), sources);
   const fallbackSearchExamples = latestSearchSnapshots
     .map(buildSearchExampleFromSnapshot)
@@ -228,7 +476,8 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, 
     { cited: 0, retrieved_not_cited: 0, not_seen: 0 }
   );
 
-  const searchExamples = observations.length > 0
+  const siteDomain = siteRows[0]?.domain || null;
+  const baseSearchExamples = observations.length > 0
     ? observations.slice(0, 6).map((r) => ({
         question: r.question,
         answerPreview: r.answer_preview,
@@ -243,6 +492,13 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, 
         sourceUrls: [],
       }))
     : fallbackSearchExamples;
+
+  const searchExamples = baseSearchExamples.map((example) => ({
+    ...example,
+    suggestions: buildEvidenceSuggestions(example, siteDomain),
+  }));
+
+  const competitorComparison = collectRollupList(rollups, 'comparison');
 
   const summary = {
     metrics,
@@ -265,17 +521,34 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, 
     lastUpdatedAt: iso(observations[0]?.fetched_at || snapshots[0]?.fetched_at),
   };
 
+  const internalInputs = internalInputsOverride || deriveInternalInputs({
+    authorityScore: authorityRows[0]?.authority_score ?? null,
+    schemaEvents,
+    confusionRows,
+    coverageRows,
+  });
+
+  const aiVisibility = buildAiVisibility({
+    summary,
+    siteDomain,
+    competitorComparison,
+    internalInputs,
+    snapshotsByEndpoint,
+    latestSnapshotAt,
+    freshnessSourceContext,
+  });
+
+  const defaultPrompt = prompts[0] || null;
+  const defaultLocationCode = defaultPrompt?.location_code ?? null;
+  const defaultLanguageCode = defaultPrompt?.language_code ?? null;
+
   return {
     siteId,
-    siteDomain: siteRows[0]?.domain || null,
+    siteDomain,
     days: Number(days || 7),
     sources,
     summary,
-    aiVisibility: buildAiVisibility({
-      summary,
-      authorityScore: authorityRows[0]?.authority_score ?? null,
-      latestSnapshotAt,
-    }),
+    aiVisibility,
     promptIntelligence: {
       summary: { counts, totalActivePrompts: observations.length > 0 ? observations.length : prompts.length },
       prompts: observations.length > 0
@@ -287,8 +560,8 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, 
             intent: 'tracked',
             priority: 'medium',
             active: true,
-            locationCode: 2840,
-            languageCode: 'en',
+            locationCode: defaultLocationCode,
+            languageCode: defaultLanguageCode,
             source: r.source,
             seeded: false,
             latestObservation: {
@@ -324,16 +597,51 @@ export async function buildLlmMentionsOverview({ siteId, days = 7, windowStart, 
       pageActions: [],
     },
     competitors: {
-      summary: { comparison: collectRollupList(rollups, 'comparison'), lastUpdatedAt: iso(snapshots[0]?.fetched_at) },
+      summary: { comparison: competitorComparison, lastUpdatedAt: iso(snapshots[0]?.fetched_at) },
     },
-    snapshots: snapshots.map((r) => ({
-      endpoint: r.endpoint,
-      targetKey: r.target_key,
-      source: r.source,
-      sourceContext: r.source_context,
-      fetchedAt: iso(r.fetched_at),
-      expiresAt: iso(r.expires_at),
-    })),
+    snapshots: snapshotsList,
+  };
+}
+
+function parseMetricNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function deriveInternalInputs({ authorityScore, schemaEvents = [], confusionRows = [], coverageRows = [] }) {
+  const completenessValues = [];
+  const aiSearchValues = [];
+  for (const event of schemaEvents) {
+    const m = event?.metrics;
+    if (!m || typeof m !== 'object') continue;
+    const completeness = parseMetricNumber(m['ai.schemaCompleteness']);
+    const aiSearch = parseMetricNumber(m['ai.searchVisibility']);
+    if (completeness !== null) completenessValues.push(completeness);
+    if (aiSearch !== null) aiSearchValues.push(aiSearch);
+  }
+  const schemaCompletenessScore = completenessValues.length
+    ? clampScore(Math.round((completenessValues.reduce((s, v) => s + v, 0) / completenessValues.length) * 100))
+    : null;
+  const aiSearchScore = aiSearchValues.length
+    ? clampScore(Math.round((aiSearchValues.reduce((s, v) => s + v, 0) / aiSearchValues.length) * 100))
+    : null;
+  const confusionAvg = confusionRows.length
+    ? clampScore(Math.round(confusionRows.reduce((s, r) => s + Number(r.score || 0), 0) / confusionRows.length))
+    : null;
+  const allGaps = coverageRows.flatMap((r) => (Array.isArray(r.gaps) ? r.gaps : []));
+  const coverageScore = coverageRows.length
+    ? clampScore(Math.max(0, 100 - allGaps.length * 8))
+    : null;
+  return {
+    authorityScore: authorityScore ?? null,
+    schemaCompletenessScore,
+    confusionScore: confusionAvg,
+    coverageScore,
+    aiSearchScore,
   };
 }
 
@@ -446,11 +754,15 @@ export async function buildLlmMentionsPromptIntelligence({ siteId, source = 'cha
     { cited: 0, retrieved_not_cited: 0, not_seen: 0 }
   );
 
+  const defaultPrompt = prompts[0] || null;
+  const defaultLocationCode = defaultPrompt?.location_code ?? null;
+  const defaultLanguageCode = defaultPrompt?.language_code ?? null;
+
   return {
     siteId,
     source,
-    locationCode: 2840,
-    languageCode: 'en',
+    locationCode: defaultLocationCode,
+    languageCode: defaultLanguageCode,
     summary: { counts, totalActivePrompts: observations.length > 0 ? observations.length : prompts.length },
     prompts: observations.length > 0
       ? observations.map((r) => ({
@@ -461,8 +773,8 @@ export async function buildLlmMentionsPromptIntelligence({ siteId, source = 'cha
           intent: 'tracked',
           priority: 'medium',
           active: true,
-          locationCode: 2840,
-          languageCode: 'en',
+          locationCode: defaultLocationCode,
+          languageCode: defaultLanguageCode,
           source: r.source,
           seeded: false,
           latestObservation: {
@@ -515,11 +827,20 @@ export async function buildLlmMentionsSourceGap({ siteId, source = 'chat_gpt' })
     { protect: 0, optimize: 0, create: 0 }
   );
 
+  const [defaultPrompt] = await sql`
+    SELECT location_code, language_code
+    FROM llm_mentions_tracked_prompts
+    WHERE site_id = ${siteId}::uuid
+      AND active = true
+    ORDER BY created_at ASC
+    LIMIT 1
+  `;
+
   return {
     siteId,
     source,
-    locationCode: 2840,
-    languageCode: 'en',
+    locationCode: defaultPrompt?.location_code ?? null,
+    languageCode: defaultPrompt?.language_code ?? null,
     summary: { counts },
     opportunities: observations
       .filter((r) => r.outcome !== 'cited')

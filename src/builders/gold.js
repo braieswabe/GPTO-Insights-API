@@ -1,5 +1,19 @@
 import { db } from '../db.js';
 import { boundsFromInput, boundsDaySpan } from '../dashboard-range.js';
+import { buildTelemetry } from './telemetry.js';
+import { buildAuthority } from './authority.js';
+import { buildConfusion } from './confusion.js';
+import { buildCoverage } from './coverage.js';
+import { buildExperience } from './experience.js';
+import { buildJourney } from './journey.js';
+import { buildLlmMentionsOverview } from './llm-mentions.js';
+import {
+  averageEngagementScore,
+  buildExperienceHealth,
+  clampScore,
+  getScoreBand,
+  getScoreSeverity,
+} from '../lib/scoring.js';
 
 function trendSymbol(value) {
   if (value > 0.1) return '↑';
@@ -23,11 +37,28 @@ function metricValue(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : 'Collecting';
 }
 
+function buildVisitorBehaviorScore({ confusion, telemetry, experience, journey }) {
+  const blend = buildExperienceHealth(confusion, experience, telemetry);
+  if (blend.score !== null) return blend.score;
+  const engagement = averageEngagementScore(experience);
+  if (engagement !== null) return engagement;
+  if (telemetry?.totals?.pageViews > 0) {
+    const trendBoost = Number(telemetry?.trend?.visits || 0);
+    const journeyDepth = (journey?.rows || []).length;
+    const baseline = 45;
+    const adjusted = baseline + Math.min(15, journeyDepth * 1.5) + Math.max(-10, Math.min(15, trendBoost * 25));
+    return clampScore(Math.round(adjusted));
+  }
+  return null;
+}
+
 function buildCustomerInsights({
   telemetry,
   authority,
   confusion,
   coverage,
+  experience,
+  journey,
   llmMentions,
   technicalReadiness,
   conversionArchitecture,
@@ -54,12 +85,16 @@ function buildCustomerInsights({
     status: item.status,
   }));
 
+  const visitorBehaviorScore = buildVisitorBehaviorScore({ confusion, telemetry, experience, journey });
+
   return {
     scorecards: [
       {
         id: 'ai-visibility',
         title: 'AI visibility',
         score: aiVisibility?.composite ?? null,
+        band: aiVisibility?.band || getScoreBand(aiVisibility?.composite ?? null),
+        severity: getScoreSeverity(aiVisibility?.composite ?? null),
         state: scoreState(aiVisibility?.composite),
         summary: aiVisibility?.narrative || 'AI visibility is being measured from LLM Mentions snapshots.',
         metrics: [
@@ -73,8 +108,10 @@ function buildCustomerInsights({
       {
         id: 'visitor-behavior',
         title: 'Visitor behavior',
-        score: telemetry?.totals?.pageViews > 0 ? 65 : null,
-        state: telemetry?.totals?.pageViews > 0 ? 'Building' : 'Collecting',
+        score: visitorBehaviorScore,
+        band: getScoreBand(visitorBehaviorScore),
+        severity: getScoreSeverity(visitorBehaviorScore),
+        state: scoreState(visitorBehaviorScore),
         summary: frictionTotal > 0 ? 'Visitor friction is visible in recent behavioral signals.' : 'No major visitor friction is visible yet.',
         metrics: [
           { label: 'Visits', value: metricValue(telemetry?.totals?.visits) },
@@ -88,6 +125,8 @@ function buildCustomerInsights({
         id: 'trust-readiness',
         title: 'Trust readiness',
         score: authority?.authorityScore ?? null,
+        band: authority?.band || getScoreBand(authority?.authorityScore ?? null),
+        severity: getScoreSeverity(authority?.authorityScore ?? null),
         state: scoreState(authority?.authorityScore),
         summary: technicalReadiness.framing,
         metrics: [
@@ -184,7 +223,7 @@ export async function buildGoldDashboard(input) {
 
   const { start, end } = boundsFromInput(input);
   const spanDays = boundsDaySpan({ start, end });
-  const [telemetry, authority, confusion, coverage, llmMentions, updates] = await Promise.all([
+  const [telemetry, authority, confusion, coverage, llmMentions, experience, journey, updates] = await Promise.all([
     buildTelemetry(input),
     buildAuthority(input),
     buildConfusion(input),
@@ -196,6 +235,8 @@ export async function buildGoldDashboard(input) {
       windowEnd: end,
       sources: ['chat_gpt', 'google_ai_overviews'],
     }).catch(() => null),
+    buildExperience(input).catch(() => null),
+    buildJourney(input).catch(() => null),
     sql`
       SELECT from_version, to_version, applied_at, created_at
       FROM update_history
@@ -219,36 +260,49 @@ export async function buildGoldDashboard(input) {
         ? 'Core performance is improving, but visitor journey clarity needs work'
         : 'Several blockers are limiting progress and should be addressed first';
 
+  const technicalStatus = authorityScore >= 70 ? 'Improving' : authorityScore < 50 ? 'Constrained' : 'Stable';
+  const technicalBlockers = blockers.slice(0, 3);
   const technicalReadiness = {
-    status: authorityScore >= 70 ? 'Improving' : authorityScore < 50 ? 'Constrained' : 'Stable',
+    status: technicalStatus,
     pagePerformanceTrends: 'No major change this period',
     crawlIndexNotes: 'Visibility assessment pending',
-    outstandingBlockers: blockers.slice(0, 3),
+    outstandingBlockers: technicalBlockers,
     framing: authorityScore >= 70 ? 'Foundation is strengthening' : authorityScore < 50 ? 'Foundation issues are emerging' : 'Foundation is currently steady',
+    plainLanguage: technicalPlainLanguage(technicalStatus, technicalBlockers),
   };
 
+  const conversionStatus = confusionTotal > 10 ? 'Fragmented' : confusionTotal > 0 ? 'Partially Coherent' : 'Clarifying';
+  const conversionFriction = confusionTotal > 0 ? 'Visitor journey friction is present in recent signals' : 'No major journey friction is visible yet';
   const conversionArchitecture = {
-    status: confusionTotal > 10 ? 'Fragmented' : confusionTotal > 0 ? 'Partially Coherent' : 'Clarifying',
-    primaryFrictionPoint: confusionTotal > 0 ? 'Visitor journey friction is present in recent signals' : 'No major journey friction is visible yet',
+    status: conversionStatus,
+    primaryFrictionPoint: conversionFriction,
     improvementsSinceLastPeriod: [],
     framing: 'User journey clarity is being assessed from cached behavioral signals',
+    plainLanguage: conversionPlainLanguage(conversionStatus, conversionFriction, []),
   };
 
   const highProofGaps = coverageGaps.filter((gap) => gap?.severity === 'high' || gap?.severity === 'critical');
+  const contentStatus = coverageGaps.length === 0 ? 'Strengthening' : coverageGaps.length > 5 ? 'Weak' : 'Uneven';
+  const proofGapLabels = highProofGaps.map((gap) => gap.label || 'Proof gap').slice(0, 3);
   const contentSignalQuality = {
-    status: coverageGaps.length === 0 ? 'Strengthening' : coverageGaps.length > 5 ? 'Weak' : 'Uneven',
+    status: contentStatus,
     authoritySignalDensity: authorityScore >= 70 ? 'Strong' : authorityScore > 0 ? 'Moderate' : 'Pending',
     intentAlignmentNotes: coverage?.missingIntents?.length ? 'Missing intent coverage is present' : 'No major missing intents flagged',
-    proofGaps: highProofGaps.map((gap) => gap.label || 'Proof gap').slice(0, 3),
+    proofGaps: proofGapLabels,
     framing: 'Trust signals are improving but still need consistency',
+    plainLanguage: contentPlainLanguage(contentStatus, proofGapLabels),
   };
 
+  const growthStatus = authorityScore >= 70 && confusionTotal < 10 ? 'Suitable' : authorityScore < 50 || blockers.length > 3 ? 'Not Ready' : 'Cautious';
+  const growthMeasurement = telemetry?.totals?.pageViews > 0;
+  const growthConstraints = blockers.slice(0, 2);
   const growthReadiness = {
-    status: authorityScore >= 70 && confusionTotal < 10 ? 'Suitable' : authorityScore < 50 || blockers.length > 3 ? 'Not Ready' : 'Cautious',
+    status: growthStatus,
     paidAmplificationSuitability: 'Directional assessment only',
-    measurementHooksPresent: telemetry?.totals?.pageViews > 0,
-    scalabilityConstraints: blockers.slice(0, 2),
+    measurementHooksPresent: growthMeasurement,
+    scalabilityConstraints: growthConstraints,
     framing: 'Growth potential is improving, but expectations should stay realistic',
+    plainLanguage: growthPlainLanguage(growthStatus, growthConstraints, growthMeasurement),
   };
 
   const constraintRegister = [
@@ -305,6 +359,8 @@ export async function buildGoldDashboard(input) {
       authority,
       confusion,
       coverage,
+      experience,
+      journey,
       llmMentions,
       technicalReadiness,
       conversionArchitecture,
@@ -317,10 +373,68 @@ export async function buildGoldDashboard(input) {
   };
 }
 
+function technicalPlainLanguage(status, blockers) {
+  const statusLine =
+    status === 'Improving'
+      ? 'The site foundation is getting stronger, and fixes are landing.'
+      : status === 'Constrained'
+        ? 'The site foundation is under strain, which limits progress.'
+        : 'The site foundation is steady, with no major changes.';
+  const blockerLine = blockers.length > 0
+    ? `There ${blockers.length === 1 ? 'is' : 'are'} ${blockers.length} issue${blockers.length === 1 ? '' : 's'} still slowing momentum.`
+    : 'No major blockers are called out right now.';
+  return `${statusLine} ${blockerLine}`;
+}
+
+function conversionPlainLanguage(status, friction, improvements) {
+  const statusLine =
+    status === 'Clarifying'
+      ? 'The customer journey is becoming clearer, but it is not fully tightened yet.'
+      : status === 'Fragmented'
+        ? 'The customer journey feels disjointed, which causes drop-off.'
+        : 'Parts of the customer journey work, but it is inconsistent.';
+  const frictionLine = friction ? `Main customer blocker: ${friction}.` : 'Main customer blocker is not specified.';
+  const improvementLine = improvements.length > 0
+    ? `${improvements.length} improvement${improvements.length === 1 ? '' : 's'} were implemented recently.`
+    : 'No recent improvements were recorded this period.';
+  return `${statusLine} ${frictionLine} ${improvementLine}`;
+}
+
+function contentPlainLanguage(status, proofGaps) {
+  const statusLine =
+    status === 'Strengthening'
+      ? 'Content credibility is improving and aligning better with what people expect.'
+      : status === 'Weak'
+        ? 'Content does not yet build enough trust or match intent.'
+        : 'Some content performs well, but consistency is missing.';
+  const proofLine = proofGaps.length > 0
+    ? `There ${proofGaps.length === 1 ? 'is' : 'are'} ${proofGaps.length} trust gap${proofGaps.length === 1 ? '' : 's'} to address.`
+    : 'No major trust gaps were flagged this period.';
+  return `${statusLine} ${proofLine}`;
+}
+
+function growthPlainLanguage(status, constraints, tracking) {
+  const statusLine =
+    status === 'Suitable'
+      ? 'The foundation can support growth without major waste.'
+      : status === 'Not Ready'
+        ? 'Scaling now would likely underperform without fixes first.'
+        : 'Growth is possible, but it needs careful pacing.';
+  const trackingLine = tracking
+    ? 'Tracking is in place to measure outcomes.'
+    : 'Tracking is missing, so results will be hard to measure.';
+  const constraintLine = constraints.length > 0
+    ? `${constraints.length} scale limit${constraints.length === 1 ? '' : 's'} still need attention.`
+    : 'No major scale limits were flagged this period.';
+  return `${statusLine} ${trackingLine} ${constraintLine}`;
+}
+
 export async function buildDashboardStats(input) {
   const telemetry = await buildTelemetry(input);
   return {
-    sites: siteId ? 1 : 0,
+    sites: input?.siteId ? 1 : 0,
+    siteId: input?.siteId || null,
+    range: telemetry.range,
     totals: telemetry.totals,
     trend: telemetry.trend,
     topPages: telemetry.topPages,

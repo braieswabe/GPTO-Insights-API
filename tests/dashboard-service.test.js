@@ -30,6 +30,8 @@ describe('dashboard prewarm targets', () => {
         'admin:overview:site-1:7d',
         'admin:stats:site-1:7d',
         'customer:gold:site-1:7d',
+        'admin:csuite:site-1:7d',
+        'admin:monthly_insights:site-1:7d',
         'employee:llm_mentions_overview:site-1:7d',
       ]
     );

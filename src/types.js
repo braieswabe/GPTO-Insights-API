@@ -1,4 +1,4 @@
-export const MODEL_VERSION = 'gpto.dashboard.insights.v1';
+export const MODEL_VERSION = 'gpto.dashboard.insights.v2';
 export const EMPTY_SITE_UUID = '00000000-0000-0000-0000-000000000000';
 
 export const DASHBOARD_MODULES = [
@@ -34,6 +34,9 @@ export const MODULE_TTL_SECONDS = {
   gold: 30 * 60,
   stats: 60 * 60,
   export_data: 30 * 60,
+  csuite: 30 * 60,
+  monthly_insights: 60 * 60,
+  ai_report: 6 * 60 * 60,
 };
 
 export const DASHBOARD_MODULE_ALIASES = {

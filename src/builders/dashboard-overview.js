@@ -48,6 +48,18 @@ export async function buildDashboardOverview(input) {
     }).catch(() => null);
   }
 
+  const display = buildDisplayLayer({
+    telemetry,
+    authority,
+    schema,
+    coverage,
+    confusion,
+    experience,
+    journey,
+    llmMentions,
+    executiveSummary,
+  });
+
   return {
     sites: sitesList.length,
     sitesList,
@@ -64,5 +76,63 @@ export async function buildDashboardOverview(input) {
     dashboardIndex: indexData?.dashboards ?? [],
     llmAiVisibilityIndex: indexData?.llmAiVisibility ?? null,
     aiReadability,
+    display,
+  };
+}
+
+function buildDisplayLayer({ telemetry, authority, schema, coverage, confusion, experience, journey, llmMentions, executiveSummary }) {
+  const llmComposite = llmMentions?.aiVisibility?.composite ?? executiveSummary?.aiVisibility?.composite ?? null;
+  return {
+    authority: {
+      score: authority?.authorityScore ?? null,
+      band: authority?.band ?? null,
+      severity: authority?.severity ?? null,
+    },
+    schema: {
+      completenessScore: schema?.completenessScore ?? null,
+      qualityScore: schema?.qualityScore ?? null,
+      band: schema?.band ?? null,
+      severity: schema?.severity ?? null,
+    },
+    coverage: {
+      priorityFixes: coverage?.totals?.priorityFixes ?? 0,
+      riskBand: coverage?.riskBand ?? null,
+      riskLabel: executiveSummary?.pulseBlends?.coverageRisk?.label ?? null,
+    },
+    confusion: {
+      total: confusion?.totals
+        ? Number(confusion.totals.repeatedSearches || 0)
+          + Number(confusion.totals.deadEnds || 0)
+          + Number(confusion.totals.dropOffs || 0)
+          + Number(confusion.totals.intentMismatches || 0)
+        : 0,
+      confidence: confusion?.confidence?.level ?? 'Unknown',
+    },
+    experience: {
+      healthScore: experience?.healthScore ?? executiveSummary?.pulseBlends?.experienceHealth?.score ?? null,
+      band: experience?.band ?? null,
+      severity: experience?.severity ?? null,
+    },
+    journey: {
+      rowCount: journey?.rowCount ?? (journey?.rows?.length ?? 0),
+      loops: journey?.loops ?? 0,
+      strengthBand: journey?.strengthBand ?? null,
+    },
+    aiVisibility: {
+      composite: llmComposite,
+      band: llmMentions?.aiVisibility?.band ?? executiveSummary?.aiVisibility?.band ?? null,
+      severity: executiveSummary?.aiVisibility?.severity ?? null,
+      mentions: llmMentions?.summary?.metrics?.mentions ?? null,
+      aiSearchVolume: llmMentions?.summary?.metrics?.aiSearchVolume ?? null,
+      impressions: llmMentions?.summary?.metrics?.impressions ?? null,
+    },
+    telemetry: {
+      pageViews: telemetry?.totals?.pageViews ?? 0,
+      visits: telemetry?.totals?.visits ?? 0,
+      trendPctLabel: telemetry?.trendPctLabel || null,
+      trendPct: telemetry?.trendPct || null,
+    },
+    signalChips: executiveSummary?.signalChips || [],
+    pulseBlends: executiveSummary?.pulseBlends || null,
   };
 }

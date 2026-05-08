@@ -299,10 +299,26 @@ function qualityPage(payload) {
   );
 }
 
-function technicalPage(payload) {
+export function technicalAppendixData(payload) {
   const readability = payload.aiReadability || {};
-  const competitorRows = payload.llmMentions?.competitors?.summary?.comparison || [];
-  const sourceGap = payload.llmMentions?.sourceGap?.pageActions || [];
+  const competitors = payload.llmMentions?.competitors || {};
+  const sourceGapBlock = payload.llmMentions?.sourceGap || {};
+  const competitorRows =
+    competitors.summary?.comparison ||
+    competitors.comparison ||
+    competitors.data?.comparison ||
+    [];
+  const sourceGap =
+    sourceGapBlock.pageActions ||
+    sourceGapBlock.opportunities ||
+    sourceGapBlock.data?.pageActions ||
+    sourceGapBlock.data?.opportunities ||
+    [];
+  return { readability, competitorRows, sourceGap };
+}
+
+function technicalPage(payload) {
+  const { readability, competitorRows, sourceGap } = technicalAppendixData(payload);
   return sectionPage('Technical Appendix', 'Methodology-facing data for operators and employees.',
     e(View, null,
       metricGrid([
@@ -312,13 +328,13 @@ function technicalPage(payload) {
       ]),
       e(Text, { style: styles.sectionIntro }, 'Competitor comparison'),
       table([
-        { key: 'target', label: 'Domain', width: '46%', render: (row) => shorten(row.target, 56) },
+        { key: 'target', label: 'Domain', width: '46%', render: (row) => shorten(row.target || row.domain || row.siteDomain || row.competitor, 56) },
         { key: 'mentions', label: 'Mentions', width: '18%', render: (row) => formatNumber(row.mentions) },
         { key: 'volume', label: 'AI volume', width: '18%', render: (row) => formatNumber(row.aiSearchVolume) },
         { key: 'sov', label: 'SoV', width: '18%', render: (row) => formatPercent(row.shareOfVoice, { assumeFraction: true }) },
       ], competitorRows.slice(0, 12), 'competitor'),
       e(Text, { style: [styles.sectionIntro, { marginTop: 12 }] }, 'Source-gap actions'),
-      list(sourceGap.slice(0, 12).map((row) => `${sentenceCase(row.action)}: ${row.label || row.prompt || row.url || 'Untitled'}`)),
+      list(sourceGap.slice(0, 12).map((row) => `${sentenceCase(row.action || row.outcome || 'review')}: ${row.label || row.prompt || row.question || row.url || 'Untitled'}`)),
     ),
   );
 }

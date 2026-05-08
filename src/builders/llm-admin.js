@@ -7,10 +7,44 @@ import {
   buildLlmMentionsTrends,
 } from './llm-mentions.js';
 import { fetchLlmMentionsLive } from '../services/dataforseo.js';
+import { buildCacheIdentity, upsertCacheRow } from '../cache.js';
+import { ttlForModule } from '../types.js';
 
 const DEFAULT_SOURCE = 'chat_gpt';
-const DEFAULT_LOCATION_CODE = 2840;
-const DEFAULT_LANGUAGE_CODE = 'en';
+/**
+ * Fallback DataForSEO defaults used only when neither the request nor the
+ * tracked-prompt configuration provides explicit values.
+ * The locations endpoint advertises this fallback so admin UIs can render it.
+ */
+const FALLBACK_LOCATION_CODE = 2840;
+const FALLBACK_LANGUAGE_CODE = 'en';
+
+async function loadDefaultLocaleForSite(siteId, source) {
+  if (!siteId) return { locationCode: null, languageCode: null };
+  const sql = db();
+  const rows = source
+    ? await sql`
+        SELECT location_code, language_code
+        FROM llm_mentions_tracked_prompts
+        WHERE site_id = ${siteId}::uuid
+          AND active = true
+          AND source = ${source}
+        ORDER BY created_at ASC
+        LIMIT 1
+      `
+    : await sql`
+        SELECT location_code, language_code
+        FROM llm_mentions_tracked_prompts
+        WHERE site_id = ${siteId}::uuid
+          AND active = true
+        ORDER BY created_at ASC
+        LIMIT 1
+      `;
+  return {
+    locationCode: rows[0]?.location_code ?? null,
+    languageCode: rows[0]?.language_code ?? null,
+  };
+}
 
 function iso(value) {
   return value ? new Date(value).toISOString() : null;
@@ -46,13 +80,18 @@ export async function buildLegacyLlmMentionsResponse(search) {
   const sources = sourcesFromSearch(search);
   const source = sourceFromSearch(search);
   const overview = await buildLlmMentionsOverview({ siteId, days: daysFromSearch(search), sources });
+  const defaults = await loadDefaultLocaleForSite(siteId, source);
+  const requestedLocation = search.get('locationCode');
+  const requestedLanguage = search.get('languageCode');
   return {
     siteId,
     siteDomain: overview.siteDomain,
     tier: null,
     filters: {
-      locationCode: Number(search.get('locationCode') || DEFAULT_LOCATION_CODE),
-      languageCode: search.get('languageCode') || DEFAULT_LANGUAGE_CODE,
+      locationCode: requestedLocation
+        ? Number(requestedLocation)
+        : defaults.locationCode ?? FALLBACK_LOCATION_CODE,
+      languageCode: requestedLanguage || defaults.languageCode || FALLBACK_LANGUAGE_CODE,
       source,
     },
     summary: overview.summary,
@@ -87,11 +126,16 @@ export async function buildLlmEndpointResponse(endpoint, search) {
       days,
       rollupType: search.get('rollupType') || 'summary',
     });
+    const defaults = await loadDefaultLocaleForSite(siteId, source);
+    const requestedLocation = search.get('locationCode');
+    const requestedLanguage = search.get('languageCode');
     return {
       siteId,
       source,
-      locationCode: Number(search.get('locationCode') || DEFAULT_LOCATION_CODE),
-      languageCode: search.get('languageCode') || DEFAULT_LANGUAGE_CODE,
+      locationCode: requestedLocation
+        ? Number(requestedLocation)
+        : defaults.locationCode ?? FALLBACK_LOCATION_CODE,
+      languageCode: requestedLanguage || defaults.languageCode || FALLBACK_LANGUAGE_CODE,
       rollupType: result.rollupType,
       points: result.trend || [],
     };
@@ -105,7 +149,26 @@ export async function buildLlmEndpointResponse(endpoint, search) {
   if (endpoint === 'top-pages') return { siteId, source, rows: legacy.summary?.topPages || [] };
   if (endpoint === 'top-domains') return { siteId, source, rows: legacy.summary?.topDomains || [] };
   if (endpoint === 'search') return { siteId, source, rows: legacy.summary?.searchExamples || [] };
-  if (endpoint === 'locations') return { siteId, source, locations: [{ locationCode: DEFAULT_LOCATION_CODE, languageCode: DEFAULT_LANGUAGE_CODE, label: 'United States / English' }] };
+  if (endpoint === 'locations') {
+    const sql = db();
+    const rows = await sql`
+      SELECT DISTINCT location_code, language_code
+      FROM llm_mentions_tracked_prompts
+      WHERE site_id = ${siteId}::uuid
+        AND active = true
+        AND location_code IS NOT NULL
+        AND language_code IS NOT NULL
+      ORDER BY location_code ASC
+    `;
+    const locations = rows.length
+      ? rows.map((r) => ({
+          locationCode: r.location_code,
+          languageCode: r.language_code,
+          label: `${r.location_code} / ${r.language_code}`,
+        }))
+      : [{ locationCode: FALLBACK_LOCATION_CODE, languageCode: FALLBACK_LANGUAGE_CODE, label: 'United States / English' }];
+    return { siteId, source, locations };
+  }
   return legacy;
 }
 
@@ -153,8 +216,8 @@ export async function createTrackedPrompt(body) {
       ${body.intent || 'tracked'},
       ${body.priority || 'medium'},
       ${body.active !== false},
-      ${Number(body.locationCode || DEFAULT_LOCATION_CODE)},
-      ${body.languageCode || DEFAULT_LANGUAGE_CODE},
+      ${Number(body.locationCode || FALLBACK_LOCATION_CODE)},
+      ${body.languageCode || FALLBACK_LANGUAGE_CODE},
       ${body.source || DEFAULT_SOURCE},
       ${body.seeded === true},
       now(),
@@ -268,14 +331,40 @@ export async function runPromptRefresh(search) {
     throw error;
   }
   const source = sourceFromSearch(search);
-  const overview = await buildLlmMentionsOverview({ siteId, days: daysFromSearch(search), sources: [source] });
+  const days = daysFromSearch(search);
+  const portalScope = search.get('portal') === 'admin' ? 'admin' : search.get('portal') === 'customer' ? 'customer' : 'employee';
+  const sources = [source];
+  const overview = await buildLlmMentionsOverview({ siteId, days, sources });
+
+  let refreshed = false;
+  let cacheKey = null;
+  try {
+    const identity = buildCacheIdentity({
+      portalScope,
+      moduleKey: 'llm_mentions_overview',
+      siteId,
+      rangeKey: `${days}d`,
+      params: { days, sources },
+    });
+    await upsertCacheRow(identity, overview, { ttlSeconds: ttlForModule('llm_mentions_overview') });
+    refreshed = true;
+    cacheKey = `${portalScope}:llm_mentions_overview:${siteId}:${days}d:${identity.paramsHash}`;
+  } catch (error) {
+    console.error('runPromptRefresh cache write failed (non-fatal):', error?.message || error);
+  }
+
   return {
     ok: true,
     siteId,
     source,
-    refreshed: false,
-    message: 'Gateway cache refreshed from persisted LLM Mentions data.',
+    refreshed,
+    cacheKey,
+    refreshedAt: new Date().toISOString(),
+    message: refreshed
+      ? 'Gateway cache refreshed and primed with the latest LLM Mentions overview.'
+      : 'Gateway cache refresh attempted but could not be persisted; payload returned from the live build.',
     summary: overview.summary,
+    aiVisibility: overview.aiVisibility,
   };
 }
 
@@ -299,7 +388,7 @@ export async function runRawRequest(body = {}, search = new URLSearchParams()) {
             status_code: 20000,
             status_message: 'Ok.',
             result: [
-              { location_code: DEFAULT_LOCATION_CODE, location_name: 'United States', language_code: DEFAULT_LANGUAGE_CODE, language_name: 'English' },
+              { location_code: FALLBACK_LOCATION_CODE, location_name: 'United States', language_code: FALLBACK_LANGUAGE_CODE, language_name: 'English' },
             ],
           },
         ],

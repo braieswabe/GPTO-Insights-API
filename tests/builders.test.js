@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { DASHBOARD_MODULES, ttlForModule, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays } from '../src/types.js';
+import { DASHBOARD_MODULES, MODEL_VERSION, ttlForModule, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays } from '../src/types.js';
 
 describe('types constants', () => {
   it('has all expected modules', () => {
@@ -27,7 +27,14 @@ describe('types constants', () => {
     assert.equal(ttlForModule('authority'), 30 * 60);
     assert.equal(ttlForModule('coverage'), 60 * 60);
     assert.equal(ttlForModule('llm_mentions_overview'), 6 * 60 * 60);
+    assert.equal(ttlForModule('csuite'), 30 * 60);
+    assert.equal(ttlForModule('monthly_insights'), 60 * 60);
+    assert.equal(ttlForModule('ai_report'), 6 * 60 * 60);
     assert.equal(ttlForModule('unknown'), 30 * 60);
+  });
+
+  it('uses bumped model_version for cache invalidation', () => {
+    assert.equal(MODEL_VERSION, 'gpto.dashboard.insights.v2');
   });
 
   it('normalizes GPTO public module route aliases', () => {

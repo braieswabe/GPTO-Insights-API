@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { route } from '../src/routes.js';
 import { setDashboardReportBundleReaderForTests } from '../src/services/dashboard.js';
+import { composeReportPayload } from '../src/pdf/compose.js';
+import { technicalAppendixData } from '../src/pdf/render.js';
 
 function makeRequest(method, pathname, options = {}) {
   const url = new URL(pathname, 'http://localhost:4011');
@@ -172,6 +174,21 @@ describe('route()', () => {
       setDashboardReportBundleReaderForTests(null);
     }
   });
+
+  it('normalizes real gateway LLM result shapes for the technical appendix', () => {
+    const payload = composeReportPayload({
+      bundle: fixtureReport(),
+      rangeKey: '7d',
+      start: new Date('2026-05-01'),
+      end: new Date('2026-05-08'),
+      siteId: '11111111-1111-1111-1111-111111111111',
+      mode: 'technical',
+    });
+    const appendix = technicalAppendixData(payload);
+    assert.equal(appendix.competitorRows.length, 2);
+    assert.equal(appendix.sourceGap.length, 1);
+    assert.equal(appendix.sourceGap[0].question, 'Which AI search readiness platforms are best?');
+  });
 });
 
 function fixtureReport() {
@@ -222,15 +239,14 @@ function fixtureReport() {
       },
     },
     llmMentionsSourceGap: {
-      pageActions: [{ action: 'optimize', label: 'Pricing FAQ', url: 'https://acme.example/pricing' }],
+      summary: { counts: { protect: 1, optimize: 1, create: 0 } },
+      opportunities: [{ question: 'Which AI search readiness platforms are best?', outcome: 'retrieved_not_cited' }],
     },
     llmMentionsCompetitors: {
-      summary: {
-        comparison: [
-          { target: 'acme.example', mentions: 48, aiSearchVolume: 9200, shareOfVoice: 0.34 },
-          { target: 'rival.example', mentions: 55, aiSearchVolume: 10200, shareOfVoice: 0.39 },
-        ],
-      },
+      comparison: [
+        { target: 'acme.example', mentions: 48, aiSearchVolume: 9200, shareOfVoice: 0.34 },
+        { target: 'rival.example', mentions: 55, aiSearchVolume: 10200, shareOfVoice: 0.39 },
+      ],
     },
     siteDetail: {
       site: { domain: 'acme.example', name: 'Acme Inc' },

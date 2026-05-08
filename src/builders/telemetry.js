@@ -1,5 +1,6 @@
 import { db } from '../db.js';
-import { aggregateTelemetrySeriesByGranularity, boundsFromInput } from '../dashboard-range.js';
+import { aggregateTelemetrySeriesByGranularity, boundsFromInput, boundsDaySpan } from '../dashboard-range.js';
+import { trendPercentNumber, formatTrendPercent } from '../lib/scoring.js';
 
 function computeTrend(current, previous) {
   if (!previous) return current > 0 ? 1 : 0;
@@ -34,17 +35,20 @@ export async function buildTelemetry(input) {
     return emptyTelemetry(rangeKey, start, end, seriesGranularity);
   }
 
-  const rows = await sql`
-    SELECT day, visits, page_views, searches, interactions, top_pages, top_intents
-    FROM dashboard_rollups_daily
-    WHERE site_id = ANY(${siteIds}::uuid[])
-      AND day >= ${start}
-      AND day <= ${end}
-    ORDER BY day ASC
-  `;
+  const [rows, llmSignals] = await Promise.all([
+    sql`
+      SELECT day, visits, page_views, searches, interactions, top_pages, top_intents
+      FROM dashboard_rollups_daily
+      WHERE site_id = ANY(${siteIds}::uuid[])
+        AND day >= ${start}
+        AND day <= ${end}
+      ORDER BY day ASC
+    `,
+    siteId ? loadLlmMentionsSignals(input, sql) : Promise.resolve(null),
+  ]);
 
   if (rows.length === 0) {
-    return emptyTelemetry(rangeKey, start, end, seriesGranularity);
+    return { ...emptyTelemetry(rangeKey, start, end, seriesGranularity), llmMentionsSignals: llmSignals };
   }
 
   const dailySeries = rows.map((row) => ({
@@ -75,15 +79,30 @@ export async function buildTelemetry(input) {
     interactions: computeTrend(last.interactions || 0, first.interactions || 0),
   };
 
+  const trendPct = {
+    visits: trendPercentNumber(trend.visits),
+    pageViews: trendPercentNumber(trend.pageViews),
+    searches: trendPercentNumber(trend.searches),
+    interactions: trendPercentNumber(trend.interactions),
+  };
+  const trendPctLabel = {
+    visits: formatTrendPercent(trend.visits),
+    pageViews: formatTrendPercent(trend.pageViews),
+    searches: formatTrendPercent(trend.searches),
+    interactions: formatTrendPercent(trend.interactions),
+  };
+
   return {
     range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
     totals,
     trend,
+    trendPct,
+    trendPctLabel,
     series,
     seriesGranularity,
     topPages: mergeCountedJson(rows, 'top_pages', 'url'),
     topIntents: mergeCountedJson(rows, 'top_intents', 'intent'),
-    llmMentionsSignals: null,
+    llmMentionsSignals: llmSignals,
   };
 }
 
@@ -92,6 +111,8 @@ function emptyTelemetry(rangeKey, start, end, seriesGranularity = 'day') {
     range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
     totals: { visits: 0, pageViews: 0, searches: 0, interactions: 0 },
     trend: { visits: 0, pageViews: 0, searches: 0, interactions: 0 },
+    trendPct: { visits: null, pageViews: null, searches: null, interactions: null },
+    trendPctLabel: { visits: null, pageViews: null, searches: null, interactions: null },
     series: [],
     seriesGranularity,
     topPages: [],
@@ -99,6 +120,44 @@ function emptyTelemetry(rangeKey, start, end, seriesGranularity = 'day') {
     llmMentionsSignals: null,
     insufficientData: { message: 'No cached telemetry rollups are available for this range yet.' },
   };
+}
+
+async function loadLlmMentionsSignals(input, sql) {
+  if (!input?.siteId) return null;
+  try {
+    const { buildLlmMentionsOverview } = await import('./llm-mentions.js');
+    const { start, end } = boundsFromInput(input);
+    const days = boundsDaySpan({ start, end });
+    const overview = await buildLlmMentionsOverview({
+      siteId: input.siteId,
+      days,
+      windowStart: start,
+      windowEnd: end,
+      sources: ['chat_gpt', 'google_ai_overviews'],
+    });
+    if (!overview) return null;
+    const ai = overview.aiVisibility || null;
+    const metrics = overview.summary?.metrics || {};
+    return {
+      composite: ai?.composite ?? null,
+      band: ai?.band ?? null,
+      mentions: metrics.mentions ?? null,
+      aiSearchVolume: metrics.aiSearchVolume ?? null,
+      impressions: metrics.impressions ?? null,
+      lastUpdatedAt: overview.summary?.lastUpdatedAt || null,
+      freshness: ai?.freshness
+        ? {
+            state: ai.freshness.state,
+            summary: ai.freshness.summary,
+            sourceContext: ai.freshness.sourceContext,
+          }
+        : null,
+      sourceContext: ai?.sourceContext || null,
+    };
+  } catch (error) {
+    console.error('telemetry.loadLlmMentionsSignals failed (non-fatal):', error?.message || error);
+    return null;
+  }
 }
 
 async function getScopedSiteIds(sql, siteId) {

@@ -1,20 +1,24 @@
 import { getUserContext, requireInternalAuth } from './access.js';
 import { readJson } from './http.js';
 import { buildSiteConfig, buildSitesList } from './builders/sites.js';
+import { dashboardPageHtml } from './dashboard-page.js';
 import {
   processRefreshJobs,
   prewarmDashboard,
   readDashboardBundle,
+  readDashboardCsuite,
   readDashboardExport,
   readDashboardExportData,
   readDashboardGold,
   readDashboardModule,
+  readDashboardMonthlyInsights,
   readDashboardOverview,
   readDashboardReportBundle,
   readDashboardStats,
   refreshDashboard,
   runDashboardCronRefresh,
 } from './services/dashboard.js';
+import { readDashboardAiReport } from './services/ai-report.js';
 import {
   getTelemetryDailyRollupProgress,
   postTelemetryDailyRollup,
@@ -59,6 +63,10 @@ export async function route(request) {
   if ((method === 'GET' || method === 'HEAD') && url.pathname === '/internal/health') {
     return { status: 200, body: { ok: true, service: 'gpto-insights-gateway', time: new Date().toISOString() } };
   }
+  if (method === 'GET' && url.pathname === '/dashboard') {
+    return { status: 200, binary: true, body: Buffer.from(dashboardPageHtml(), 'utf8'),
+      headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } };
+  }
 
   if (url.pathname.startsWith('/internal/') || url.pathname.startsWith('/v1/')) {
     requireAuthOrThrow(request);
@@ -71,6 +79,10 @@ export async function route(request) {
   if (method === 'GET' && moduleMatch) return readDashboardModule(request, moduleMatch[1]);
   if (method === 'GET' && url.pathname === '/v1/dashboard/gold') return readDashboardGold(request);
   if (method === 'GET' && url.pathname === '/v1/dashboard/stats') return readDashboardStats(request);
+  if (method === 'GET' && url.pathname === '/v1/dashboard/csuite') return readDashboardCsuite(request);
+  if (method === 'GET' && url.pathname === '/v1/dashboard/csuite/monthly-insights') return readDashboardMonthlyInsights(request);
+  if (method === 'GET' && url.pathname === '/v1/dashboard/ai-report') return readDashboardAiReport(request);
+  if (method === 'POST' && url.pathname === '/v1/dashboard/ai-report') return readDashboardAiReport(request, await readJson(request));
   if (method === 'GET' && url.pathname === '/v1/dashboard/export-data') return readDashboardExportData(request);
   if (method === 'GET' && url.pathname === '/v1/dashboard/export') return readDashboardExport(request);
 

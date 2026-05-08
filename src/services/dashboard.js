@@ -5,6 +5,7 @@ import { claimRefreshJobs, completeRefreshJob, enqueueRefreshJob } from '../jobs
 import { DEFAULT_LLM_MENTION_SOURCES, computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
 import { buildDashboardOverview, buildModule, buildLlmMentionsOverview } from '../builders/index.js';
 import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
+import { buildCsuite, buildMonthlyInsights } from '../builders/csuite.js';
 import { buildSiteConfig } from '../builders/sites.js';
 import { readLegacyLlmMentions, readLlmCompetitors, readSourceGap } from './llm-mentions.js';
 import { DASHBOARD_MODULES, EMPTY_SITE_UUID, normalizeDashboardModuleKey, normalizePortal, rangeToDays, ttlForModule } from '../types.js';
@@ -174,7 +175,7 @@ async function readCachedDirectPayload({ request, identity, moduleKey, compute }
 async function buildExportData(context) {
   const { start, end } = boundsFromInput(context);
   const spanDays = boundsDaySpan({ start, end });
-  const [telemetry, confusion, authority, schema, coverage, index, executive, llmMentions] = await Promise.all([
+  const [telemetry, confusion, authority, schema, coverage, index, executive, llmMentions, aiReadability] = await Promise.all([
     buildModule('telemetry', context),
     buildModule('confusion', context),
     buildModule('authority', context),
@@ -191,6 +192,7 @@ async function buildExportData(context) {
           sources: DEFAULT_LLM_MENTION_SOURCES,
         }).catch(() => null)
       : Promise.resolve(null),
+    buildModule('ai_readability', context).catch(() => null),
   ]);
   return {
     generatedAt: new Date().toISOString(),
@@ -202,7 +204,54 @@ async function buildExportData(context) {
     coverage,
     index,
     executive,
+    executiveSummary: executive,
     llmMentions,
+    aiReadability,
+    display: {
+      telemetry: telemetry
+        ? {
+            pageViews: telemetry?.totals?.pageViews ?? 0,
+            visits: telemetry?.totals?.visits ?? 0,
+            trendPct: telemetry?.trendPct || null,
+            trendPctLabel: telemetry?.trendPctLabel || null,
+          }
+        : null,
+      authority: authority ? { score: authority.authorityScore, band: authority.band, severity: authority.severity } : null,
+      schema: schema
+        ? {
+            completenessScore: schema.completenessScore,
+            qualityScore: schema.qualityScore,
+            band: schema.band,
+            severity: schema.severity,
+          }
+        : null,
+      coverage: coverage
+        ? {
+            priorityFixes: coverage?.totals?.priorityFixes ?? 0,
+            riskBand: coverage.riskBand ?? null,
+            riskLabel: executive?.pulseBlends?.coverageRisk?.label ?? null,
+          }
+        : null,
+      confusion: confusion
+        ? {
+            total:
+              Number(confusion?.totals?.repeatedSearches || 0)
+              + Number(confusion?.totals?.deadEnds || 0)
+              + Number(confusion?.totals?.dropOffs || 0)
+              + Number(confusion?.totals?.intentMismatches || 0),
+            confidence: confusion?.confidence?.level ?? 'Unknown',
+          }
+        : null,
+      aiVisibility: llmMentions?.aiVisibility
+        ? {
+            composite: llmMentions.aiVisibility.composite,
+            band: llmMentions.aiVisibility.band,
+            mentions: llmMentions.summary?.metrics?.mentions ?? null,
+            aiSearchVolume: llmMentions.summary?.metrics?.aiSearchVolume ?? null,
+            impressions: llmMentions.summary?.metrics?.impressions ?? null,
+          }
+        : null,
+    },
   };
 }
 
@@ -212,6 +261,8 @@ async function buildDashboardCachePayload(moduleKey, context) {
   if (normalized === 'gold') return buildGoldDashboard(context);
   if (normalized === 'stats') return buildDashboardStats(context);
   if (normalized === 'export_data') return buildExportData(context);
+  if (normalized === 'csuite') return buildCsuite(context);
+  if (normalized === 'monthly_insights') return buildMonthlyInsights(context);
   if (normalized === 'llm_mentions_overview') {
     const { start, end } = boundsFromInput(context);
     const spanDays = boundsDaySpan({ start, end });
@@ -308,6 +359,32 @@ export async function readDashboardStats(request) {
     identity,
     moduleKey: 'stats',
     compute: () => buildDashboardStats(context),
+  }));
+}
+
+export async function readDashboardCsuite(request) {
+  const context = parseDashboardContext(request);
+  if (!context.siteId) return { status: 400, body: { error: 'siteId is required' } };
+  await assertSiteAccess(context);
+  const identity = cacheIdentity({ ...context, moduleKey: 'csuite', params: context.params });
+  return ok(await readCachedDirectPayload({
+    request,
+    identity,
+    moduleKey: 'csuite',
+    compute: () => buildCsuite(context),
+  }));
+}
+
+export async function readDashboardMonthlyInsights(request) {
+  const context = parseDashboardContext(request);
+  if (!context.siteId) return { status: 400, body: { error: 'siteId is required' } };
+  await assertSiteAccess(context);
+  const identity = cacheIdentity({ ...context, moduleKey: 'monthly_insights', params: context.params });
+  return ok(await readCachedDirectPayload({
+    request,
+    identity,
+    moduleKey: 'monthly_insights',
+    compute: () => buildMonthlyInsights(context),
   }));
 }
 
@@ -490,6 +567,8 @@ export function buildDashboardPrewarmTargets(sites, options = {}) {
       }
 
       targets.push({ moduleKey: 'gold', siteId, rangeKey, portalScope: 'customer', params: { portalScope: 'customer' } });
+      targets.push({ moduleKey: 'csuite', siteId, rangeKey, portalScope: 'admin', params: { portalScope: 'admin' } });
+      targets.push({ moduleKey: 'monthly_insights', siteId, rangeKey, portalScope: 'admin', params: { portalScope: 'admin' } });
       targets.push({
         moduleKey: 'llm_mentions_overview',
         siteId,

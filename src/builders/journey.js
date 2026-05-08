@@ -1,5 +1,6 @@
 import { db } from '../db.js';
 import { boundsFromInput } from '../dashboard-range.js';
+import { deriveJourneyStrengthBand } from '../lib/scoring.js';
 
 export async function buildJourney(input) {
   const { siteId, rangeKey } = input;
@@ -29,18 +30,23 @@ export async function buildJourney(input) {
     return true;
   });
 
+  const rowsOut = deduplicated.map((r) => ({
+    entryUrl: r.entry_url,
+    exitUrl: r.exit_url,
+    path: r.path,
+    stepCount: r.step_count,
+    loops: r.loops,
+    backtracks: r.backtracks,
+    stalls: r.stalls,
+    confidence: r.confidence,
+  }));
+  const loops = rowsOut.filter((r) => Number(r.loops || 0) > 0).length;
   return {
     range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
-    rows: deduplicated.map((r) => ({
-      entryUrl: r.entry_url,
-      exitUrl: r.exit_url,
-      path: r.path,
-      stepCount: r.step_count,
-      loops: r.loops,
-      backtracks: r.backtracks,
-      stalls: r.stalls,
-      confidence: r.confidence,
-    })),
-    insufficientData: deduplicated.length === 0 ? { message: 'No journey signals available for this range yet.' } : null,
+    rows: rowsOut,
+    rowCount: rowsOut.length,
+    loops,
+    strengthBand: deriveJourneyStrengthBand(rowsOut.length),
+    insufficientData: rowsOut.length === 0 ? { message: 'No journey signals available for this range yet.' } : null,
   };
 }
