@@ -21,6 +21,11 @@ const PAGE_HTML = `<!DOCTYPE html>
     transition:opacity .15s}
   button:hover{opacity:.85}
   button:disabled{opacity:.4;cursor:default}
+  button.secondary{background:#263247;border-color:#334155}
+  .rollup-status{font-size:.78rem;color:var(--muted);min-height:20px;margin-top:6px;width:100%}
+  .rollup-status.ok{color:var(--green)}
+  .rollup-status.err{color:var(--red)}
+  .rollup-status.warn{color:var(--amber)}
   .token-row{display:flex;gap:8px;align-items:center;margin-bottom:20px}
   .token-row input{flex:1;font-family:monospace;font-size:.78rem}
   .status{padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:600;display:inline-block}
@@ -80,9 +85,13 @@ const PAGE_HTML = `<!DOCTYPE html>
         <option value="30d">Last 30 days</option>
       </select>
     </div>
+    <div><label>Manual rollup</label><br>
+      <button id="rollupBtn" class="secondary" onclick="runDailyRollup()">Run daily rollups</button>
+    </div>
     <div style="margin-left:auto">
       <span id="connStatus"></span>
     </div>
+    <div id="rollupStatus" class="rollup-status"></div>
   </div>
 
   <div id="siteChips" class="sites-list"></div>
@@ -103,6 +112,17 @@ async function apiFetch(path) {
   const res = await fetch(API + path, { headers: headers() });
   if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
   return res.json();
+}
+
+async function apiPost(path, body) {
+  const res = await fetch(API + path, {
+    method: 'POST',
+    headers: { ...headers(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((json && (json.error || json.message)) || (res.status + ' ' + res.statusText));
+  return json;
 }
 
 function setStatus(text, type) {
@@ -144,6 +164,53 @@ function highlightChip() {
 }
 
 function selectSite(id) { activeSiteId = id; highlightChip(); loadTelemetry(); }
+
+function utcRollingRange(days) {
+  const capped = Math.max(1, Math.min(Number(days) || 7, 90));
+  const now = new Date();
+  const to = now.toISOString().slice(0, 10);
+  const fromDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (capped - 1)));
+  return { from: fromDate.toISOString().slice(0, 10), to };
+}
+
+function setRollupStatus(message, type) {
+  const el = document.getElementById('rollupStatus');
+  el.className = 'rollup-status ' + (type || '');
+  el.textContent = message || '';
+}
+
+async function runDailyRollup() {
+  const btn = document.getElementById('rollupBtn');
+  const range = document.getElementById('range').value;
+  const days = range === '30d' ? 30 : 7;
+  const { from, to } = utcRollingRange(days);
+  btn.disabled = true;
+  setRollupStatus('Running daily rollups for ' + (activeSiteId ? 'selected site' : 'all active sites') + '…', 'warn');
+  try {
+    const rollup = await apiPost('/internal/rollup/telemetry-daily', {
+      from,
+      to,
+      force: true,
+      ...(activeSiteId ? { siteId: activeSiteId } : {}),
+      maxSites: activeSiteId ? 1 : 200,
+      maxRuns: activeSiteId ? days : 6000
+    });
+    const refreshBody = {
+      range,
+      portalScope: 'employee',
+      force: true,
+      ...(activeSiteId ? { siteId: activeSiteId } : {})
+    };
+    const refresh = await apiPost('/internal/refresh/dashboard', refreshBody);
+    await loadTelemetry();
+    const scanned = (rollup.results || []).reduce((sum, row) => sum + Number(row.eventsScanned || 0), 0);
+    setRollupStatus('Rollup complete: ' + rollup.runs + ' day/site runs, ' + scanned + ' events scanned. Dashboard cache refreshed (' + (refresh.results || []).length + ' modules).', 'ok');
+  } catch (e) {
+    setRollupStatus('Rollup failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 async function loadTelemetry() {
   const range = document.getElementById('range').value;

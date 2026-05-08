@@ -39,6 +39,16 @@ describe('route()', () => {
     assert.ok(result.body.time);
   });
 
+  it('serves a dashboard page with a manual daily rollup control', async () => {
+    const result = await route(makeRequest('GET', '/dashboard'));
+    assert.equal(result.status, 200);
+    assert.equal(result.binary, true);
+    const html = result.body.toString('utf8');
+    assert.match(html, /Run daily rollups/);
+    assert.match(html, /internal\/rollup\/telemetry-daily/);
+    assert.match(html, /internal\/refresh\/dashboard/);
+  });
+
   it('returns 204 for favicon', async () => {
     const result = await route(makeRequest('GET', '/favicon.ico'));
     assert.equal(result.status, 204);

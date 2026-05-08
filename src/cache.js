@@ -59,7 +59,22 @@ export function serializeCacheRow(row) {
 export async function getCacheRow(identity) {
   const sql = db();
   const rows = await sql`
-    SELECT *
+    SELECT
+      id,
+      site_id,
+      portal_scope,
+      module_key,
+      range_key,
+      params_hash,
+      payload,
+      status,
+      generated_at,
+      source_watermark_at,
+      expires_at,
+      error,
+      model_version,
+      created_at,
+      updated_at
     FROM dashboard_api_cache
     WHERE portal_scope = ${identity.portalScope}
       AND module_key = ${identity.moduleKey}
@@ -102,7 +117,22 @@ export async function upsertCacheRow(identity, payload, options = {}) {
         ${options.status || 'ready'}, ${generatedAt}, ${sourceWatermarkAt},
         ${expiresAt}, ${options.error || null}, ${identity.modelVersion}, now()
       )
-      RETURNING *
+      RETURNING
+        id,
+        site_id,
+        portal_scope,
+        module_key,
+        range_key,
+        params_hash,
+        payload,
+        status,
+        generated_at,
+        source_watermark_at,
+        expires_at,
+        error,
+        model_version,
+        created_at,
+        updated_at
     `;
     return rows[0];
   });
