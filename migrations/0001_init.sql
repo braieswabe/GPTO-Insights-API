@@ -15,14 +15,14 @@ CREATE TABLE IF NOT EXISTS dashboard_api_cache (
   source_watermark_at timestamp NULL,
   expires_at timestamp NULL,
   error text NULL,
-  model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v1',
+  model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v2',
   created_at timestamp NOT NULL DEFAULT now(),
   updated_at timestamp NOT NULL DEFAULT now()
 );
 
 -- Add columns that may be missing if the table was created by an older migration
 ALTER TABLE dashboard_api_cache ADD COLUMN IF NOT EXISTS portal_scope varchar(40) NOT NULL DEFAULT 'employee';
-ALTER TABLE dashboard_api_cache ADD COLUMN IF NOT EXISTS model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v1';
+ALTER TABLE dashboard_api_cache ADD COLUMN IF NOT EXISTS model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v2';
 ALTER TABLE dashboard_api_cache ADD COLUMN IF NOT EXISTS source_watermark_at timestamp NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS dashboard_api_cache_unique_idx
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS dashboard_refresh_jobs (
   started_at timestamp NULL,
   finished_at timestamp NULL,
   error text NULL,
-  model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v1',
+  model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v2',
   created_at timestamp NOT NULL DEFAULT now(),
   updated_at timestamp NOT NULL DEFAULT now()
 );
@@ -81,7 +81,7 @@ ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS requested_at timesta
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS started_at timestamp NULL;
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS finished_at timestamp NULL;
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS error text NULL;
-ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v1';
+ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS model_version varchar(80) NOT NULL DEFAULT 'gpto.dashboard.insights.v2';
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS created_at timestamp NOT NULL DEFAULT now();
 ALTER TABLE dashboard_refresh_jobs ADD COLUMN IF NOT EXISTS updated_at timestamp NOT NULL DEFAULT now();
 

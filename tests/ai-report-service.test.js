@@ -26,4 +26,13 @@ describe('Routes wire-up', () => {
     const { route } = await import('../src/routes.js');
     assert.equal(typeof route, 'function');
   });
+
+  it('exposes the site-scoped dashboard and LLM bundle readers', async () => {
+    const dashboard = await import('../src/services/dashboard.js');
+    const llm = await import('../src/services/llm-mentions.js');
+    assert.equal(typeof dashboard.readDashboardGold, 'function');
+    assert.equal(typeof dashboard.readDashboardCsuite, 'function');
+    assert.equal(typeof dashboard.readDashboardReportBundle, 'function');
+    assert.equal(typeof llm.readLlmMentionsBundle, 'function');
+  });
 });

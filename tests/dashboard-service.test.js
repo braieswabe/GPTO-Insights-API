@@ -12,6 +12,25 @@ describe('dashboard cache read policy', () => {
     assert.equal(shouldServeCachedDashboardRow({ payload: { ok: true }, expires_at: new Date(Date.now() - 60000) }), true);
   });
 
+  it('recomputes cached overview rows missing the display contract', () => {
+    assert.equal(shouldServeCachedDashboardRow({ payload: { telemetry: {} } }, 'overview'), false);
+    assert.equal(shouldServeCachedDashboardRow({ payload: { telemetry: {}, display: {} } }, 'overview'), true);
+  });
+
+  it('recomputes cached gold rows missing gateway-owned visitor scoring', () => {
+    assert.equal(shouldServeCachedDashboardRow({ payload: { optimisationAxes: {} } }, 'gold'), false);
+    assert.equal(shouldServeCachedDashboardRow({
+      payload: {
+        optimisationAxes: {
+          technicalReadiness: { plainLanguage: 'Technical signal.' },
+        },
+        customerInsights: {
+          visitorBehavior: { score: 80 },
+        },
+      },
+    }, 'gold'), true);
+  });
+
   it('queues refresh only for stale cache rows', () => {
     assert.equal(shouldQueueDashboardRefresh(null), false);
     assert.equal(shouldQueueDashboardRefresh({ expires_at: new Date(Date.now() - 60000) }), true);

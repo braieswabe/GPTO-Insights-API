@@ -88,6 +88,41 @@ function requestWithSearchParams(request, searchParams) {
   return { ...request, url };
 }
 
+export function buildLlmMentionsBundleBody({ overview = {}, legacy = null, sections = [] } = {}) {
+  const byName = Object.fromEntries(sections.map((section) => [section.name, section]));
+  const combined = overview.data?.combined || null;
+  const aiVisibility = combined?.aiVisibility || legacy?.aiVisibility || null;
+  return {
+    data: {
+      llmMentions: {
+        overview: overview.data || null,
+        summary: legacy,
+        aiVisibility,
+        trends: byName.trends?.value || null,
+        competitors: byName.competitors?.value || null,
+        promptIntelligence: byName.promptIntelligence?.value || null,
+        sourceGap: byName.sourceGap?.value || null,
+        endpoints: {
+          aggregated: byName.aggregated?.value || null,
+          topPages: byName.topPages?.value || null,
+          topDomains: byName.topDomains?.value || null,
+          search: byName.search?.value || null,
+        },
+      },
+      timings: sections.map(({ name, ok: sectionOk, durationMs, error }) => ({ name, ok: sectionOk, durationMs, error })),
+    },
+    freshness: {
+      llm_mentions_bundle: { ...computedFreshness(), stale: Boolean(overview.stale) },
+      ...(overview.freshness || {}),
+    },
+    generatedAt: new Date().toISOString(),
+    stale: Boolean(overview.stale),
+    refreshQueued: Boolean(overview.refreshQueued),
+    refreshQueueReason: overview.refreshQueueReason || null,
+    jobId: overview.jobId || null,
+  };
+}
+
 export async function readLlmMentionsOverview(request) {
   const search = request.url.searchParams;
   if (!search.get('siteId')) return { status: 400, body: { error: 'siteId is required' } };
@@ -142,34 +177,8 @@ export async function readLlmMentionsBundle(request) {
 
   const byName = Object.fromEntries(sections.map((section) => [section.name, section]));
   const overview = byName.overview.value?.body || {};
-  return ok({
-    data: {
-      llmMentions: {
-        overview: overview.data || null,
-        summary: byName.legacy.value || null,
-        trends: byName.trends.value || null,
-        competitors: byName.competitors.value || null,
-        promptIntelligence: byName.promptIntelligence.value || null,
-        sourceGap: byName.sourceGap.value || null,
-        endpoints: {
-          aggregated: byName.aggregated.value || null,
-          topPages: byName.topPages.value || null,
-          topDomains: byName.topDomains.value || null,
-          search: byName.search.value || null,
-        },
-      },
-      timings: sections.map(({ name, ok: sectionOk, durationMs, error }) => ({ name, ok: sectionOk, durationMs, error })),
-    },
-    freshness: {
-      llm_mentions_bundle: { ...computedFreshness(), stale: Boolean(overview.stale) },
-      ...(overview.freshness || {}),
-    },
-    generatedAt: new Date().toISOString(),
-    stale: Boolean(overview.stale),
-    refreshQueued: Boolean(overview.refreshQueued),
-    refreshQueueReason: overview.refreshQueueReason || null,
-    jobId: overview.jobId || null,
-  });
+  const legacy = byName.legacy.value || null;
+  return ok(buildLlmMentionsBundleBody({ overview, legacy, sections }));
 }
 
 export async function readLegacyLlmMentions(request) {

@@ -91,6 +91,45 @@ describe('route()', () => {
     assert.equal(result.status, 400);
   });
 
+  it('returns 400 for malformed customer user ids before Postgres casts', async () => {
+    process.env.INTERNAL_API_TOKEN = 'test-token';
+    const req = makeRequest('GET', '/v1/dashboard/gold', {
+      searchParams: {
+        siteId: '00000000-0000-4000-8000-000000000001',
+        portal: 'customer',
+      },
+      headers: {
+        'x-gpto-user-role': 'client',
+        'x-gpto-user-id': 'codex-smoke',
+      },
+    });
+
+    await assert.rejects(
+      () => route(req),
+      (error) => error.statusCode === 400 && error.message === 'Invalid x-gpto-user-id header'
+    );
+  });
+
+  it('returns 400 for malformed customer tenant ids before Postgres casts', async () => {
+    process.env.INTERNAL_API_TOKEN = 'test-token';
+    const req = makeRequest('GET', '/v1/dashboard/gold', {
+      searchParams: {
+        siteId: '00000000-0000-4000-8000-000000000001',
+        portal: 'customer',
+      },
+      headers: {
+        'x-gpto-user-role': 'client',
+        'x-gpto-user-id': '00000000-0000-4000-8000-000000000002',
+        'x-gpto-tenant-id': 'tenant-smoke',
+      },
+    });
+
+    await assert.rejects(
+      () => route(req),
+      (error) => error.statusCode === 400 && error.message === 'Invalid x-gpto-tenant-id header'
+    );
+  });
+
   it('returns 401 for dashboard bundle without token', async () => {
     process.env.INTERNAL_API_TOKEN = 'test-token';
     const req = makeRequest('GET', '/v1/dashboard/bundle');

@@ -79,8 +79,24 @@ function payloadFreshness(savedRow) {
   return serializeCacheRow(savedRow)?.metadata || computedFreshness();
 }
 
-export function shouldServeCachedDashboardRow(row) {
-  return Boolean(row);
+function dashboardPayloadSatisfiesContract(payload, moduleKey) {
+  if (!payload) return false;
+  if (moduleKey === 'overview') return Boolean(payload.display);
+  if (moduleKey === 'export_data') return Boolean(payload.display);
+  if (moduleKey === 'gold') {
+    const axes = payload.optimisationAxes || {};
+    const axisValues = Object.values(axes);
+    const hasPlainLanguage = axisValues.length > 0 && axisValues.every((axis) => axis && typeof axis.plainLanguage === 'string');
+    const hasVisitorScore = payload.customerInsights?.visitorBehavior?.score !== undefined;
+    return hasPlainLanguage && hasVisitorScore;
+  }
+  return true;
+}
+
+export function shouldServeCachedDashboardRow(row, moduleKey = null) {
+  if (!row) return false;
+  if (!moduleKey) return true;
+  return dashboardPayloadSatisfiesContract(row.payload, moduleKey);
 }
 
 export function shouldQueueDashboardRefresh(row) {
@@ -144,7 +160,7 @@ function bundleResponse({ key, data, freshness = {}, timings = [], stale = false
 
 async function readCachedEnvelope({ request, identity, moduleKey, fallback, compute }) {
   const row = await getCacheRow(identity);
-  if (shouldServeCachedDashboardRow(row)) {
+  if (shouldServeCachedDashboardRow(row, moduleKey)) {
     const refresh = shouldQueueDashboardRefresh(row) ? await enqueueIfStale(row, identity, requestContext(request)) : null;
     return ok(cacheEnvelope(row, refresh, moduleKey, fallback));
   }
@@ -162,7 +178,7 @@ async function readCachedEnvelope({ request, identity, moduleKey, fallback, comp
 
 async function readCachedDirectPayload({ request, identity, moduleKey, compute }) {
   const row = await getCacheRow(identity);
-  if (shouldServeCachedDashboardRow(row)) {
+  if (shouldServeCachedDashboardRow(row, moduleKey)) {
     if (shouldQueueDashboardRefresh(row)) await enqueueIfStale(row, identity, requestContext(request));
     return serializeCacheRow(row)?.payload ?? null;
   }

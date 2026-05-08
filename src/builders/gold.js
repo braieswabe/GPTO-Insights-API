@@ -154,6 +154,9 @@ function buildCustomerInsights({
       signals: asArray(aiVisibility?.signals),
     },
     visitorBehavior: {
+      score: visitorBehaviorScore,
+      band: getScoreBand(visitorBehaviorScore),
+      severity: getScoreSeverity(visitorBehaviorScore),
       totals: telemetry?.totals || { visits: 0, pageViews: 0, searches: 0, interactions: 0 },
       trend: {
         visits: telemetry?.trend?.visits ?? 0,

@@ -1,5 +1,28 @@
 import { db } from './db.js';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+let dbReader = db;
+
+function badRequest(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+export function isUuid(value) {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+export function setAccessDbReaderForTests(reader) {
+  dbReader = reader || db;
+}
+
+function validateOptionalUuid(value, label) {
+  if (value == null || value === '') return null;
+  if (!isUuid(value)) throw badRequest(`Invalid ${label}`);
+  return value;
+}
+
 export function requireInternalAuth(request) {
   const expected = process.env.INTERNAL_API_TOKEN;
   if (!expected) {
@@ -21,8 +44,13 @@ export function getUserContext(request) {
 }
 
 export async function assertSiteAccess({ siteId, portalScope, user }) {
-  if (!siteId) {
-    if (portalScope === 'customer' || user.role === 'client') {
+  const normalizedSiteId = validateOptionalUuid(siteId, 'siteId');
+  const normalizedUserId = validateOptionalUuid(user?.userId, 'x-gpto-user-id header');
+  const normalizedTenantId = validateOptionalUuid(user?.tenantId, 'x-gpto-tenant-id header');
+  const role = user?.role || 'employee';
+
+  if (!normalizedSiteId) {
+    if (portalScope === 'customer' || role === 'client') {
       const error = new Error('siteId is required for customer scoped reads');
       error.statusCode = 400;
       throw error;
@@ -30,21 +58,21 @@ export async function assertSiteAccess({ siteId, portalScope, user }) {
     return;
   }
 
-  if (['admin', 'operator', 'employee', 'viewer'].includes(user.role) && portalScope !== 'customer') {
+  if (['admin', 'operator', 'employee', 'viewer'].includes(role) && portalScope !== 'customer') {
     return;
   }
 
-  const sql = db();
+  const sql = dbReader();
   const rows = await sql`
     SELECT s.id
     FROM sites s
     LEFT JOIN user_site_access usa
       ON usa.site_id = s.id
-     AND usa.user_id = ${user.userId}::uuid
-    WHERE s.id = ${siteId}::uuid
+     AND usa.user_id = ${normalizedUserId}::uuid
+    WHERE s.id = ${normalizedSiteId}::uuid
       AND (
         usa.id IS NOT NULL
-        OR (${user.tenantId}::uuid IS NOT NULL AND s.tenant_id = ${user.tenantId}::uuid)
+        OR (${normalizedTenantId}::uuid IS NOT NULL AND s.tenant_id = ${normalizedTenantId}::uuid)
       )
     LIMIT 1
   `;

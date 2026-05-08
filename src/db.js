@@ -20,6 +20,7 @@ export function db() {
       idle_timeout: 20,
       connect_timeout: 10,
       ssl: 'require',
+      prepare: false,
     });
   }
   return sqlClient;

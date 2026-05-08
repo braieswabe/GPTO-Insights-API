@@ -12,6 +12,7 @@ import {
   computeInternalReadinessScore,
   computeReachScore,
   getScoreBand,
+  getScoreSeverity,
   hasPositiveLlmMetrics,
   isSiteDomainMatch,
 } from '../lib/scoring.js';
@@ -308,6 +309,7 @@ function buildAiVisibility({
     external,
     composite,
     band: getScoreBand(composite),
+    severity: getScoreSeverity(composite),
     narrative,
     signals,
     breakdown,

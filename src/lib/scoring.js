@@ -169,6 +169,8 @@ export function buildWeightedBucket(score, baseWeight, totalAvailableBaseWeight,
       : null;
   return {
     score,
+    band: getScoreBand(score),
+    severity: getScoreSeverity(score),
     redistributedWeight: Number(redistributedWeight.toFixed(4)),
     freshnessMultiplier: freshnessFactor,
     contribution,
@@ -178,6 +180,8 @@ export function buildWeightedBucket(score, baseWeight, totalAvailableBaseWeight,
 export function buildInternalBucket(score) {
   return {
     score,
+    band: getScoreBand(score),
+    severity: getScoreSeverity(score),
     redistributedWeight: score !== null ? INTERNAL_WEIGHT : 0,
     freshnessMultiplier: 1,
     contribution: score !== null ? Number((score * INTERNAL_WEIGHT).toFixed(4)) : null,

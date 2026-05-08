@@ -112,6 +112,8 @@ describe('LLM scoring buckets and composite', () => {
     const reachWeight = 35;
     const internalScore = 80;
     const reach = buildWeightedBucket(70, reachWeight, reachWeight, 1);
+    assert.equal(reach.band, 'Building');
+    assert.equal(reach.severity, 'watch');
     const composite = compositeFromBreakdown({
       reach,
       citationCoverage: { score: null, redistributedWeight: 0, freshnessMultiplier: 0, contribution: null },
