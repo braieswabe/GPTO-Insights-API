@@ -1,13 +1,13 @@
 -- Daily telemetry rollup progress + dedupe + unique guard for (site_id, UTC calendar day)
 -- Idempotent: safe to run repeatedly.
 
--- Remove duplicate dashboard_rollups_daily rows per site + UTC calendar day (keep newest by created_at)
+-- Remove duplicate dashboard_rollups_daily rows per site + day (keep newest by created_at)
 DELETE FROM dashboard_rollups_daily a
 WHERE a.ctid IN (
   SELECT ctid FROM (
     SELECT ctid,
            ROW_NUMBER() OVER (
-             PARTITION BY site_id, ((day::timestamp AT TIME ZONE 'UTC')::date)
+             PARTITION BY site_id, day
              ORDER BY created_at DESC NULLS LAST, id::text DESC
            ) AS rn
     FROM dashboard_rollups_daily
@@ -15,8 +15,8 @@ WHERE a.ctid IN (
   WHERE sub.rn > 1
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS dashboard_rollups_daily_site_utc_day_uniq
-ON dashboard_rollups_daily (site_id, ((day::timestamp AT TIME ZONE 'UTC')::date));
+CREATE UNIQUE INDEX IF NOT EXISTS dashboard_rollups_daily_site_day_uniq
+ON dashboard_rollups_daily (site_id, day);
 
 CREATE TABLE IF NOT EXISTS dashboard_telemetry_daily_rollup_progress (
   site_id uuid NOT NULL REFERENCES sites(id) ON DELETE CASCADE,

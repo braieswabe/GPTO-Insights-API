@@ -5,6 +5,7 @@ import {
   processRefreshJobs,
   prewarmDashboard,
   readDashboardBundle,
+  readDashboardExport,
   readDashboardExportData,
   readDashboardGold,
   readDashboardModule,
@@ -71,6 +72,7 @@ export async function route(request) {
   if (method === 'GET' && url.pathname === '/v1/dashboard/gold') return readDashboardGold(request);
   if (method === 'GET' && url.pathname === '/v1/dashboard/stats') return readDashboardStats(request);
   if (method === 'GET' && url.pathname === '/v1/dashboard/export-data') return readDashboardExportData(request);
+  if (method === 'GET' && url.pathname === '/v1/dashboard/export') return readDashboardExport(request);
 
   if (method === 'GET' && url.pathname === '/v1/llm-mentions/overview') return readLlmMentionsOverview(request);
   if (method === 'GET' && url.pathname === '/v1/llm-mentions/bundle') return readLlmMentionsBundle(request);

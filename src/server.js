@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { loadEnv } from './env.js';
-import { parseRequest, sendError, sendJson, sendNoContent } from './http.js';
+import { parseRequest, sendError, sendNoContent, sendResult } from './http.js';
 import { route } from './routes.js';
 
 loadEnv();
@@ -17,7 +17,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const result = await route(request);
-    sendJson(res, result.status, result.body, request);
+    sendResult(res, result, request);
   } catch (error) {
     console.error(error);
     sendError(res, error, request);

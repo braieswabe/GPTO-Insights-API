@@ -29,7 +29,7 @@ export function corsHeaders(request) {
   return headers;
 }
 
-export function sendJson(response, statusCode, payload, request = null) {
+export function sendJson(response, statusCode, payload, request = null, extraHeaders = {}) {
   if (statusCode === 204 || payload === null || payload === undefined) {
     sendNoContent(response, statusCode, request);
     return;
@@ -39,9 +39,30 @@ export function sendJson(response, statusCode, payload, request = null) {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(body),
     'cache-control': 'no-store',
+    ...extraHeaders,
     ...corsHeaders(request),
   });
   response.end(body);
+}
+
+export function sendBinary(response, statusCode, payload, headers = {}, request = null) {
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || '');
+  response.writeHead(statusCode, {
+    'content-type': 'application/octet-stream',
+    'content-length': body.byteLength,
+    'cache-control': 'no-store',
+    ...headers,
+    ...corsHeaders(request),
+  });
+  response.end(request?.method === 'HEAD' ? '' : body);
+}
+
+export function sendResult(response, result, request = null) {
+  if (result?.binary === true) {
+    sendBinary(response, result.status || 200, result.body, result.headers || {}, request);
+    return;
+  }
+  sendJson(response, result?.status || 200, result?.body, request, result?.headers || {});
 }
 
 export function sendNoContent(response, statusCode, request = null) {

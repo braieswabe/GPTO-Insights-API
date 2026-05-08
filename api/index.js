@@ -1,4 +1,4 @@
-import { sendError, sendJson, sendNoContent } from '../src/http.js';
+import { sendError, sendNoContent, sendResult } from '../src/http.js';
 import { route } from '../src/routes.js';
 import { loadEnv } from '../src/env.js';
 
@@ -38,7 +38,7 @@ export default async function handler(req, res) {
       return;
     }
     const result = await route(request);
-    sendJson(res, result.status, result.body, request);
+    sendResult(res, result, request);
   } catch (error) {
     console.error(error);
     sendError(res, error, request);

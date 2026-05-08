@@ -18,9 +18,19 @@ import {
   resolveDashboardTimeBounds,
 } from '../dashboard-range.js';
 import { runTelemetryRollupCronWindow } from './telemetry-daily-rollup.js';
+import { composeReportPayload } from '../pdf/compose.js';
+import { renderDashboardReport } from '../pdf/render.js';
 
 const DASHBOARD_PREWARM_RANGES = ['7d', '30d'];
 const DASHBOARD_PREWARM_PORTALS = ['admin', 'employee'];
+const ALLOWED_EXPORT_MODES = new Set(['client', 'technical']);
+const TECHNICAL_EXPORT_ROLES = new Set(['admin', 'employee', 'super_admin', 'owner']);
+
+let readDashboardReportBundleForExport = null;
+
+export function setDashboardReportBundleReaderForTests(reader) {
+  readDashboardReportBundleForExport = reader;
+}
 
 export function emptyDashboardOverview() {
   return {
@@ -374,6 +384,71 @@ export async function readDashboardReportBundle(request) {
     timings: [exportData, siteDetail, llmMentions, llmSourceGap, llmCompetitors].map(({ name, ok: sectionOk, durationMs, error }) => ({ name, ok: sectionOk, durationMs, error })),
     stale: false,
   });
+}
+
+function parseExportMode(value, role) {
+  const requested = ALLOWED_EXPORT_MODES.has(String(value || '').toLowerCase())
+    ? String(value).toLowerCase()
+    : 'client';
+  if (requested !== 'technical') return requested;
+  return TECHNICAL_EXPORT_ROLES.has(String(role || '').toLowerCase()) ? 'technical' : 'client';
+}
+
+function safeBrandSlug(value) {
+  if (!value) return 'gpto';
+  const cleaned = String(value).replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
+  return cleaned || 'gpto';
+}
+
+function buildFileName(brand, mode, rangeKey, ext) {
+  const dateStr = new Date().toISOString().slice(0, 10);
+  return `gpto-${safeBrandSlug(brand)}-${mode}-${rangeKey}-${dateStr}.${ext}`;
+}
+
+export async function readDashboardExport(request) {
+  const context = parseDashboardContext(request);
+  const format = String(request.url.searchParams.get('format') || 'json').toLowerCase();
+  const preparedFor = request.url.searchParams.get('preparedFor') || null;
+  const mode = parseExportMode(request.url.searchParams.get('mode'), context.user?.role);
+  const { start, end } = boundsFromInput(context);
+  const reader = readDashboardReportBundleForExport || readDashboardReportBundle;
+  const bundleResult = await reader(request);
+  if (bundleResult?.status && bundleResult.status !== 200) return bundleResult;
+
+  const reportBundle = bundleResult?.body?.data?.report || {};
+  const payload = composeReportPayload({
+    bundle: reportBundle,
+    rangeKey: context.rangeKey,
+    start,
+    end,
+    siteId: context.siteId,
+    mode,
+    preparedFor,
+  });
+
+  if (format === 'pdf') {
+    const buffer = await renderDashboardReport(payload);
+    const fileName = buildFileName(payload.site?.brand || payload.site?.domain, mode, context.rangeKey, 'pdf');
+    return {
+      status: 200,
+      binary: true,
+      body: buffer,
+      headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': `attachment; filename="${fileName}"`,
+        'cache-control': 'private, max-age=0, no-store',
+      },
+    };
+  }
+
+  const fileName = buildFileName(payload.site?.brand || payload.site?.domain, mode, context.rangeKey, 'json');
+  return {
+    status: 200,
+    body: payload,
+    headers: {
+      'content-disposition': `attachment; filename="${fileName}"`,
+    },
+  };
 }
 
 async function listActiveDashboardSites() {
