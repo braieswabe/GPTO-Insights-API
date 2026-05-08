@@ -20,6 +20,10 @@ The server starts at `http://127.0.0.1:4011`.
 | `DATABASE_URL` | Yes | Pooled Postgres connection string |
 | `DATABASE_URL_UNPOOLED` | No | Direct connection for migrations |
 | `INTERNAL_API_TOKEN` | Yes | Bearer token for all `/v1/` and `/internal/` routes |
+| `GPTO_DASHBOARD_BASE_URL` | Recommended (prod) | HTTPS origin of the GPTO Next dashboard (no trailing slash). Hourly cron calls `POST /api/internal/signals/materialize` here before prewarm. |
+| `GPTO_SIGNAL_MATERIALIZE_TOKEN` | Recommended (prod) | Bearer secret shared with GPTO `GPTO_SIGNAL_MATERIALIZE_TOKEN` for that route. If unset, cron skips materialization (cache-only). |
+| `GPTO_MATERIALIZE_RANGES` | No | Comma-separated `7d` and/or `30d` sent to GPTO (default `7d`). |
+| `GPTO_SIGNAL_MATERIALIZE_TIMEOUT_MS` | No | Fetch timeout for materialize (default `110000`). |
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS origins |
 | `PORT` | No | Local dev port (default: 4011) |
 | `DASHBOARD_REFRESH_COOLDOWN_SECONDS` | No | Min seconds between refresh attempts (default: 300) |
@@ -35,14 +39,6 @@ The server starts at `http://127.0.0.1:4011`.
 | `TELEMETRY_ROLLUP_MAX_RUNS` | No | Max site×day jobs per manual rollup POST (default `500`) |
 | `DASHBOARD_TELEMETRY_CONNECTED_MS` | No | Milliseconds of telemetry freshness required for `sitesList[].dataConnection === connected` (default 1h) |
 | `DASHBOARD_TELEMETRY_STALE_MS` | No | Milliseconds after last event before `disconnected` (default 24h; must be ≥ connected window) |
-| `OPENAI_API_KEY` | No (yes for `/v1/dashboard/ai-report`) | OpenAI key used by the AI Report service to generate executive narratives |
-| `OPENAI_MODEL` | No | Override OpenAI model for AI Report (default `gpt-4o-mini`) |
-| `OPENAI_TEMPERATURE` | No | OpenAI sampling temperature (default `0.7`) |
-| `OPENAI_MAX_TOKENS` | No | OpenAI max output tokens (default `2000`) |
-| `OPENAI_API_URL` | No | Override the OpenAI chat completions endpoint (useful for proxies) |
-| `CSUITE_TARGET_AUTHORITY` | No | Authority score target for `/v1/dashboard/csuite` (default `90`) |
-| `CSUITE_TARGET_SENTIMENT` | No | Sentiment score target for `/v1/dashboard/csuite` (default `80`) |
-| `CSUITE_TARGET_AI_VISIBILITY` | No | AI Search Visibility target for `/v1/dashboard/csuite` (default `90`) |
 
 ## API Endpoints
 
@@ -54,10 +50,6 @@ The server starts at `http://127.0.0.1:4011`.
 - `GET /v1/dashboard/module/:moduleKey` – single module data
 - `GET /v1/dashboard/gold` – client-facing Gold dashboard payload
 - `GET /v1/dashboard/stats` – dashboard stats payload
-- `GET /v1/dashboard/csuite` – C-suite executive metrics (authority, sentiment, AI search visibility, competitor rank, monthly growth)
-- `GET /v1/dashboard/csuite/monthly-insights` – month-by-month C-suite insights stream
-- `GET /v1/dashboard/ai-report` – cached AI-generated executive narrative report
-- `POST /v1/dashboard/ai-report` – regenerate AI report (`{ force: true }` to bypass cache)
 - `GET /v1/dashboard/export-data` – consolidated export/report source data
 - `GET /v1/llm-mentions/overview` – LLM mentions aggregation
 - `GET /v1/llm-mentions/bundle` – page-ready LLM Mentions bundle
@@ -108,7 +100,7 @@ Deploy as a standalone Vercel project. Set environment variables in Vercel proje
 vercel --prod
 ```
 
-The Vercel cron job refreshes dashboard cache **hourly** (`0 * * * *` UTC → `/api/internal/cron/refresh`). Overview and stats cache TTLs are **one hour** to match. A second cron (`/api/internal/cron/rollup-telemetry`, default `5 2 * * *` UTC) materializes **daily telemetry rollups** from `telemetry_events` into `dashboard_rollups_daily` and records progress in `dashboard_telemetry_daily_rollup_progress` so custom dashboard date ranges have underlying facts.
+The Vercel cron job runs **hourly** (`0 * * * *` UTC → `/api/internal/cron/refresh`). When `GPTO_DASHBOARD_BASE_URL` and `GPTO_SIGNAL_MATERIALIZE_TOKEN` are set, it first materializes `*_signals` in Postgres via the GPTO Suite, then prewarms cache and processes queued refresh jobs. If those env vars are missing, the cron still refreshes cache but **does not** populate signal tables. Overview and stats cache TTLs are **one hour** to match. A second cron (`/api/internal/cron/rollup-telemetry`, default `5 2 * * *` UTC) materializes **daily telemetry rollups** from `telemetry_events` into `dashboard_rollups_daily` and records progress in `dashboard_telemetry_daily_rollup_progress` so custom dashboard date ranges have underlying facts. On materialize failure the hourly handler returns **502** and skips prewarm (fail-fast).
 
 Dashboard `sitesList` entries include `lastTelemetryAt`, `hasActiveConfig`, and `dataConnection`, keyed to the same `sites.id` as `telemetry_events.site_id`. Migration `0003_sites_last_telemetry_at.sql` adds `sites.last_telemetry_at`, backfills from events, and rollups keep it updated alongside rollup progress.
 

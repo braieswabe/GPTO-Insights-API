@@ -19,6 +19,7 @@ import {
   resolveDashboardTimeBounds,
 } from '../dashboard-range.js';
 import { runTelemetryRollupCronWindow } from './telemetry-daily-rollup.js';
+import { materializeSignalsOnGptoSuite } from './gpto-signal-materialize.js';
 import { composeReportPayload } from '../pdf/compose.js';
 import { renderDashboardReport } from '../pdf/render.js';
 
@@ -752,6 +753,23 @@ export async function runDashboardCronRefresh(body = {}) {
     }
   }
 
+  let suiteMaterialize = null;
+  try {
+    suiteMaterialize = await materializeSignalsOnGptoSuite(body);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('runDashboardCronRefresh GPTO signal materialize failed:', message);
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: message,
+        telemetryRollup,
+        suiteMaterialize: null,
+      },
+    };
+  }
+
   const [prewarm, queuedJobs] = await Promise.all([
     prewarmDashboard({ limit: body.prewarmLimit || body.limit || process.env.DASHBOARD_PREWARM_LIMIT || 20, force: body.forcePrewarm === true }),
     processRefreshJobs({ limit: body.jobLimit || 5 }),
@@ -759,6 +777,7 @@ export async function runDashboardCronRefresh(body = {}) {
   return ok({
     ok: true,
     telemetryRollup,
+    suiteMaterialize,
     prewarm: prewarm.body,
     queuedJobs: queuedJobs.body,
   });

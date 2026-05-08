@@ -16,7 +16,7 @@
       "maxDuration": 120
     },
     "api/internal/cron/refresh.js": {
-      "maxDuration": 120
+      "maxDuration": 300
     },
     "api/internal/cron/rollup-telemetry.js": {
       "maxDuration": 120
