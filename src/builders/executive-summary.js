@@ -18,6 +18,63 @@ import {
   getScoreSeverity,
 } from '../lib/scoring.js';
 
+function normalizeReferenceUrl(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s) || s.startsWith('//')) return s.startsWith('//') ? `https:${s}` : s;
+  if (s.startsWith('/')) return s;
+  return `https://${s}`;
+}
+
+function referencesFromTopPages(telemetry, limit = 3) {
+  const refs = [];
+  for (const p of (telemetry?.topPages || []).slice(0, limit)) {
+    const url = normalizeReferenceUrl(p?.url);
+    if (!url) continue;
+    const label = String(p?.url || url)
+      .split('/')
+      .filter(Boolean)
+      .pop();
+    refs.push({
+      label: label || 'Page',
+      url,
+      reason: `${Number(p?.count || 0).toLocaleString()} views in telemetry rollups for this range.`,
+    });
+  }
+  return refs;
+}
+
+function referencesFromJourney(journey, limit = 2) {
+  const refs = [];
+  for (const row of (journey?.rows || []).slice(0, limit)) {
+    const url = normalizeReferenceUrl(row?.entryUrl || row?.exitUrl);
+    if (!url) continue;
+    refs.push({
+      label: 'Visitor path',
+      url,
+      reason: `Recorded journey with ${Number(row?.stepCount || 0)} steps in this range.`,
+    });
+  }
+  return refs;
+}
+
+function referencesFromExperience(experience, limit = 2) {
+  const refs = [];
+  for (const page of (experience?.pages || []).slice(0, limit)) {
+    const url = normalizeReferenceUrl(page?.url);
+    if (!url) continue;
+    refs.push({
+      label: 'Experience sample',
+      url,
+      reason:
+        typeof page?.score === 'number'
+          ? `Experience score ${page.score}/100 in this window.`
+          : 'Experience diagnostics available for this page.',
+    });
+  }
+  return refs;
+}
+
 export async function buildExecutiveSummary(input) {
   const [telemetry, authority, experience, searchDiagnostics, confusion, coverage, schema, journey] = await Promise.all([
     buildTelemetry(input),
@@ -62,6 +119,10 @@ export async function buildExecutiveSummary(input) {
     aiVisibility: aiVisibilityBlock,
   });
 
+  const topPageRefs = referencesFromTopPages(telemetry, 4);
+  const journeyRefs = referencesFromJourney(journey, 3);
+  const experienceRefs = referencesFromExperience(experience, 3);
+
   const insights = [
     {
       question: 'Is the site gaining usable AI-search momentum?',
@@ -69,6 +130,7 @@ export async function buildExecutiveSummary(input) {
         telemetry.totals.pageViews > 0
           ? `${telemetry.totals.pageViews.toLocaleString()} page views and ${telemetry.totals.searches.toLocaleString()} searches are represented in cached rollups for this range.`
           : 'No cached telemetry rollups are available for this range yet.',
+      references: topPageRefs.length ? topPageRefs : referencesFromJourney(journey, 2),
     },
     {
       question: 'Are trust signals strong enough?',
@@ -76,6 +138,19 @@ export async function buildExecutiveSummary(input) {
         authority.authorityScore > 0
           ? `Authority is currently ${authority.authorityScore}/100 with ${authority.trustSignals.length} trust signals represented.`
           : 'Authority signals are still building.',
+      references: (() => {
+        const fromTrust = (authority.trustSignals || [])
+          .map((signal) => {
+            const label = String(signal?.label || 'Trust signal');
+            const value = signal?.value;
+            const url = typeof value === 'string' && /^https?:\/\//i.test(value) ? value : null;
+            if (!url) return null;
+            return { label, url, reason: 'Persisted trust signal evidence for this range.' };
+          })
+          .filter(Boolean);
+        if (fromTrust.length) return fromTrust;
+        return topPageRefs.slice(0, 2);
+      })(),
     },
     {
       question: 'What needs attention first?',
@@ -85,6 +160,28 @@ export async function buildExecutiveSummary(input) {
           : experience.pages.length > 0
             ? 'Experience diagnostics are available; prioritize low-scoring pages first.'
             : 'No cached search or experience diagnostics are available yet.',
+      references:
+        searchDiagnostics.rows.length > 0
+          ? topPageRefs
+          : experienceRefs.length > 0
+            ? experienceRefs
+            : journeyRefs,
+    },
+    {
+      question: 'Where are visitors moving across the site?',
+      answer:
+        journey.rows.length > 0
+          ? `${journey.rows.length} distinct visitor paths are available; review loops and backtracks on high-traffic routes.`
+          : 'Journey rollups are still sparse for this range — widen the date window once more telemetry is ingested.',
+      references: journeyRefs.length ? journeyRefs : topPageRefs,
+    },
+    {
+      question: 'Which pages should we protect first?',
+      answer:
+        coverage?.totals?.contentGaps > 0
+          ? `Coverage shows ${coverage.totals.contentGaps} content gap${coverage.totals.contentGaps === 1 ? '' : 's'}; shore up missing intents before expanding net-new pages.`
+          : 'Coverage signals look stable — continue monitoring as new pages ship.',
+      references: topPageRefs.length ? topPageRefs.slice(0, 2) : experienceRefs,
     },
   ];
 

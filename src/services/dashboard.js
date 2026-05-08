@@ -665,7 +665,18 @@ export async function refreshDashboard(request, body) {
 
   const modules = Array.isArray(body.modules) && body.modules.length > 0
     ? body.modules.map(normalizeDashboardModuleKey)
-    : ['telemetry', 'authority', 'executive_summary', 'experience', 'search_diagnostics', 'confusion', 'coverage'];
+    : [
+        'telemetry',
+        'authority',
+        'executive_summary',
+        'experience',
+        'search_diagnostics',
+        'confusion',
+        'coverage',
+        'journey',
+        'schema',
+        'ai_readability',
+      ];
 
   const results = [];
   for (const moduleKey of modules.filter((key) => DASHBOARD_MODULES.includes(key) && key !== 'overview')) {
@@ -754,20 +765,27 @@ export async function runDashboardCronRefresh(body = {}) {
   }
 
   let suiteMaterialize = null;
-  try {
-    suiteMaterialize = await materializeSignalsOnGptoSuite(body);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('runDashboardCronRefresh GPTO signal materialize failed:', message);
-    return {
-      status: 502,
-      body: {
-        ok: false,
-        error: message,
-        telemetryRollup,
-        suiteMaterialize: null,
-      },
+  if (body.skipSuiteMaterialize === true) {
+    suiteMaterialize = {
+      skipped: true,
+      message: 'skipSuiteMaterialize: suite materialize not invoked (caller already ran GPTO signal upserts).',
     };
+  } else {
+    try {
+      suiteMaterialize = await materializeSignalsOnGptoSuite(body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('runDashboardCronRefresh GPTO signal materialize failed:', message);
+      return {
+        status: 502,
+        body: {
+          ok: false,
+          error: message,
+          telemetryRollup,
+          suiteMaterialize: null,
+        },
+      };
+    }
   }
 
   const [prewarm, queuedJobs] = await Promise.all([

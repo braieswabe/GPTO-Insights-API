@@ -81,6 +81,75 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
   const visitsSessions = Number(agg?.visits_sessions || 0);
   const visits = visitsSessions > 0 ? visitsSessions : pageViews;
 
+  const [topPagesRow] = await tx`
+    WITH pages AS (
+      SELECT
+        NULLIF(
+          TRIM(
+            COALESCE(
+              NULLIF(te.page->>'url', ''),
+              NULLIF(te.context->>'url', '')
+            )
+          ),
+          ''
+        ) AS url_raw,
+        COUNT(*)::int AS cnt
+      FROM telemetry_events te
+      WHERE te.site_id = ${siteId}::uuid
+        AND te.timestamp >= ${dayStart}
+        AND te.timestamp < ${dayEnd}
+        AND te.event_type = 'page_view'
+      GROUP BY 1
+    )
+    SELECT COALESCE(
+      (
+        SELECT jsonb_agg(jsonb_build_object('url', ranked.url_raw, 'count', ranked.cnt))
+        FROM (
+          SELECT url_raw, cnt
+          FROM pages
+          WHERE url_raw IS NOT NULL
+          ORDER BY cnt DESC
+          LIMIT 25
+        ) ranked
+      ),
+      '[]'::jsonb
+    ) AS top_pages
+  `;
+
+  const [topIntentsRow] = await tx`
+    WITH intents AS (
+      SELECT
+        NULLIF(
+          TRIM(
+            COALESCE(
+              NULLIF(te.context->>'intent', ''),
+              NULLIF(te.metrics->>'intent', '')
+            )
+          ),
+          ''
+        ) AS intent_raw,
+        COUNT(*)::int AS cnt
+      FROM telemetry_events te
+      WHERE te.site_id = ${siteId}::uuid
+        AND te.timestamp >= ${dayStart}
+        AND te.timestamp < ${dayEnd}
+      GROUP BY 1
+    )
+    SELECT COALESCE(
+      (
+        SELECT jsonb_agg(jsonb_build_object('intent', ranked.intent_raw, 'count', ranked.cnt))
+        FROM (
+          SELECT intent_raw, cnt
+          FROM intents
+          WHERE intent_raw IS NOT NULL
+          ORDER BY cnt DESC
+          LIMIT 15
+        ) ranked
+      ),
+      '[]'::jsonb
+    ) AS top_intents
+  `;
+
   await tx`
     DELETE FROM dashboard_rollups_daily
     WHERE site_id = ${siteId}::uuid
@@ -98,8 +167,8 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
       ${pageViews},
       ${Number(agg?.searches || 0)},
       ${Number(agg?.interactions || 0)},
-      NULL,
-      NULL,
+      ${topPagesRow?.top_pages ?? tx.json([])},
+      ${topIntentsRow?.top_intents ?? tx.json([])},
       NULL
     )
   `;
