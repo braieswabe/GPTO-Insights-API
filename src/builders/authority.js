@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { boundsFromInput } from '../dashboard-range.js';
 import { getScoreBand, getScoreSeverity } from '../lib/scoring.js';
+import { loadLatestSiteScoreSnapshot } from '../lib/site-score-snapshot.js';
 
 function average(values) {
   const clean = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
@@ -40,6 +41,8 @@ export async function buildAuthority(input) {
   const { start, end } = boundsFromInput(input);
 
   if (siteIds.length === 0) return emptyAuthority(rangeKey, start, end);
+  const scoreSnapshot = siteId ? await loadLatestSiteScoreSnapshot({ siteId, start, end }) : null;
+  const snapshotScore = Number(scoreSnapshot?.scores?.siteAuthority || 0);
 
   const rows = await sql`
     SELECT authority_score, trust_signals, blockers, confidence, created_at
@@ -51,9 +54,9 @@ export async function buildAuthority(input) {
     LIMIT 50
   `;
 
-  if (rows.length === 0) return emptyAuthority(rangeKey, start, end);
+  if (rows.length === 0 && !scoreSnapshot) return emptyAuthority(rangeKey, start, end);
 
-  const authorityScore = average(rows.map((r) => r.authority_score || 0));
+  const authorityScore = snapshotScore || average(rows.map((r) => r.authority_score || 0));
   const persistedTrustSignals = rows.flatMap((r) => Array.isArray(r.trust_signals) ? r.trust_signals : []);
   const trustSignals = persistedTrustSignals.length > 0
     ? persistedTrustSignals
@@ -71,6 +74,14 @@ export async function buildAuthority(input) {
     confidenceGaps: deriveConfidenceGaps(authorityScore, persistedTrustSignals, blockers.length),
     blockers,
     confidence: { level: confidenceLevel(rows.length), score: average(rows.map((r) => r.confidence || 0)) },
+    scoreSnapshot: scoreSnapshot
+      ? {
+          id: scoreSnapshot.id,
+          modelVersion: scoreSnapshot.model_version,
+          generatedAt: scoreSnapshot.created_at ? new Date(scoreSnapshot.created_at).toISOString() : null,
+          dataCompleteness: scoreSnapshot.evidence?.dataCompleteness || null,
+        }
+      : null,
   };
 }
 

@@ -1,4 +1,5 @@
 import { db } from '../db.js';
+import { loadLatestSiteScoreSnapshot } from '../lib/site-score-snapshot.js';
 import {
   LLM_INTERNAL_WEIGHT,
   LLM_VISIBILITY_WEIGHTS,
@@ -530,7 +531,7 @@ export async function buildLlmMentionsOverview({
     coverageRows,
   });
 
-  const aiVisibility = buildAiVisibility({
+  let aiVisibility = buildAiVisibility({
     summary,
     siteDomain,
     competitorComparison,
@@ -539,6 +540,45 @@ export async function buildLlmMentionsOverview({
     latestSnapshotAt,
     freshnessSourceContext,
   });
+  const scoreSnapshot = await loadLatestSiteScoreSnapshot({ siteId, start: since, end: until });
+  if (scoreSnapshot) {
+    const snapshotScores = scoreSnapshot.scores || {};
+    const snapshotSources = scoreSnapshot.source_scores || {};
+    aiVisibility = {
+      ...aiVisibility,
+      composite: Number(snapshotScores.overallAiVisibility || 0),
+      band: getScoreBand(Number(snapshotScores.overallAiVisibility || 0)),
+      severity: getScoreSeverity(Number(snapshotScores.overallAiVisibility || 0)),
+      narrative: `AI visibility is ${Number(snapshotScores.overallAiVisibility || 0)}/100 from ${scoreSnapshot.model_version}.`,
+      internal: {
+        ...aiVisibility.internal,
+        authorityScore: Number(snapshotScores.siteAuthority || aiVisibility.internal?.authorityScore || 0),
+        schemaCompletenessScore: scoreSnapshot.evidence?.schema?.completenessScore ?? aiVisibility.internal?.schemaCompletenessScore ?? null,
+      },
+      external: {
+        ...aiVisibility.external,
+        mentions: Number(snapshotScores.mentions || 0),
+        metrics: {
+          ...aiVisibility.external.metrics,
+          mentions: Number(snapshotScores.mentions || 0),
+          citations: Number(snapshotScores.citations || 0),
+          citedPages: Number(snapshotScores.citedPages || 0),
+        },
+      },
+      signals: Object.entries(snapshotSources).map(([source, score]) => ({
+        id: `${source}_score_snapshot`,
+        level: Number(score || 0) >= 40 ? 'info' : 'warn',
+        message: `${source} visibility is ${Number(score || 0)}/100.`,
+      })),
+      scoreSnapshot: {
+        id: scoreSnapshot.id,
+        modelVersion: scoreSnapshot.model_version,
+        generatedAt: scoreSnapshot.created_at ? new Date(scoreSnapshot.created_at).toISOString() : null,
+        dataCompleteness: scoreSnapshot.evidence?.dataCompleteness || null,
+        freshness: scoreSnapshot.evidence?.freshness || null,
+      },
+    };
+  }
 
   const defaultPrompt = prompts[0] || null;
   const defaultLocationCode = defaultPrompt?.location_code ?? null;

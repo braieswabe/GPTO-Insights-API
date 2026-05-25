@@ -23,6 +23,7 @@ import {
   getTelemetryDailyRollupProgress,
   postTelemetryDailyRollup,
 } from './services/telemetry-daily-rollup.js';
+import { materializeSiteScores } from './services/site-score-materialize.js';
 import {
   patchTrackedPrompt,
   readLegacyLlmMentions,
@@ -115,6 +116,7 @@ export async function route(request) {
   if (method === 'POST' && url.pathname === '/internal/refresh/llm-mentions') return refreshLlmMentions(request, await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/prewarm') return prewarmDashboard(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/process') return processRefreshJobs(await readJson(request));
+  if (method === 'POST' && url.pathname === '/internal/materialize/site-scores') return materializeSiteScores(await readJson(request));
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/refresh') {
     return runDashboardCronRefresh(method === 'POST' ? await readJson(request) : {});
   }

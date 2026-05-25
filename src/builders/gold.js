@@ -14,6 +14,7 @@ import {
   getScoreBand,
   getScoreSeverity,
 } from '../lib/scoring.js';
+import { loadLatestSiteScoreSnapshot } from '../lib/site-score-snapshot.js';
 
 function trendSymbol(value) {
   if (value > 0.1) return '↑';
@@ -67,6 +68,7 @@ function buildCustomerInsights({
   constraintRegister,
   changeLog,
   nextLogicalFocus,
+  scoreSnapshot,
 }) {
   const aiVisibility = llmMentions?.aiVisibility || null;
   const aiExternal = aiVisibility?.external || {};
@@ -85,7 +87,11 @@ function buildCustomerInsights({
     status: item.status,
   }));
 
-  const visitorBehaviorScore = buildVisitorBehaviorScore({ confusion, telemetry, experience, journey });
+  const snapshotScores = scoreSnapshot?.scores || {};
+  const visitorBehaviorScore =
+    typeof snapshotScores.visitorExperience === 'number'
+      ? snapshotScores.visitorExperience
+      : buildVisitorBehaviorScore({ confusion, telemetry, experience, journey });
 
   return {
     scorecards: [
@@ -251,7 +257,9 @@ export async function buildGoldDashboard(input) {
     `.catch(() => []),
   ]);
 
-  const authorityScore = authority?.authorityScore || 0;
+  const scoreSnapshot = await loadLatestSiteScoreSnapshot({ siteId, start, end });
+  const snapshotScores = scoreSnapshot?.scores || {};
+  const authorityScore = Number(snapshotScores.siteAuthority || authority?.authorityScore || 0);
   const confusionTotal = Object.values(confusion?.totals || {}).reduce((sum, value) => sum + Number(value || 0), 0);
   const coverageGaps = asArray(coverage?.gaps);
   const blockers = asArray(authority?.blockers);
@@ -357,6 +365,18 @@ export async function buildGoldDashboard(input) {
     ],
     nextLogicalFocus,
     aiVisibility: llmMentions?.aiVisibility || null,
+    scoreSnapshot: scoreSnapshot
+      ? {
+          id: scoreSnapshot.id,
+          modelVersion: scoreSnapshot.model_version,
+          generatedAt: scoreSnapshot.created_at ? new Date(scoreSnapshot.created_at).toISOString() : null,
+          scores: scoreSnapshot.scores,
+          sourceScores: scoreSnapshot.source_scores,
+          issueDistribution: scoreSnapshot.issue_distribution,
+          dataCompleteness: scoreSnapshot.evidence?.dataCompleteness || null,
+          freshness: scoreSnapshot.evidence?.freshness || null,
+        }
+      : null,
     customerInsights: buildCustomerInsights({
       telemetry,
       authority,
@@ -372,6 +392,7 @@ export async function buildGoldDashboard(input) {
       constraintRegister,
       changeLog,
       nextLogicalFocus,
+      scoreSnapshot,
     }),
   };
 }

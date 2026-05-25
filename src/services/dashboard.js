@@ -20,6 +20,7 @@ import {
 } from '../dashboard-range.js';
 import { runTelemetryRollupCronWindow } from './telemetry-daily-rollup.js';
 import { materializeSignalsOnGptoSuite } from './gpto-signal-materialize.js';
+import { materializeSiteScores } from './site-score-materialize.js';
 import { composeReportPayload } from '../pdf/compose.js';
 import { renderDashboardReport } from '../pdf/render.js';
 
@@ -802,6 +803,7 @@ export async function runDashboardCronRefresh(body = {}) {
   }
 
   let suiteMaterialize = null;
+  let siteScoreMaterialize = null;
   if (body.skipSuiteMaterialize === true) {
     suiteMaterialize = {
       skipped: true,
@@ -825,6 +827,26 @@ export async function runDashboardCronRefresh(body = {}) {
     }
   }
 
+  try {
+    siteScoreMaterialize = await materializeSiteScores({
+      siteId: body.siteId || null,
+      ranges: Array.isArray(body.ranges) ? body.ranges : process.env.GPTO_MATERIALIZE_RANGES?.split(',').map((s) => s.trim()),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('runDashboardCronRefresh site score materialize failed:', message);
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: message,
+        telemetryRollup,
+        suiteMaterialize,
+        siteScoreMaterialize: null,
+      },
+    };
+  }
+
   const [prewarm, queuedJobs] = await Promise.all([
     prewarmDashboard({ limit: body.prewarmLimit || body.limit || process.env.DASHBOARD_PREWARM_LIMIT || 20, force: body.forcePrewarm === true }),
     processRefreshJobs({ limit: body.jobLimit || 5 }),
@@ -833,6 +855,7 @@ export async function runDashboardCronRefresh(body = {}) {
     ok: true,
     telemetryRollup,
     suiteMaterialize,
+    siteScoreMaterialize: siteScoreMaterialize?.body || siteScoreMaterialize,
     prewarm: prewarm.body,
     queuedJobs: queuedJobs.body,
   });

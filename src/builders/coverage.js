@@ -1,5 +1,6 @@
 import { db } from '../db.js';
 import { boundsFromInput } from '../dashboard-range.js';
+import { loadLatestSiteScoreSnapshot } from '../lib/site-score-snapshot.js';
 
 function average(values) {
   const clean = values.filter((v) => typeof v === 'number' && Number.isFinite(v));
@@ -31,6 +32,48 @@ export async function buildCoverage(input) {
 
   if (siteIds.length === 0) {
     return emptyCoverage(rangeKey, start, end, 'No sites available.');
+  }
+  const scoreSnapshot = siteId ? await loadLatestSiteScoreSnapshot({ siteId, start, end }) : null;
+  if (scoreSnapshot) {
+    const issues = Array.isArray(scoreSnapshot.issue_distribution) ? scoreSnapshot.issue_distribution : [];
+    const priorityItems = issues.filter((issue) => ['high', 'critical'].includes(String(issue.severity || '').toLowerCase()));
+    const totals = {
+      contentGaps: Number(scoreSnapshot.scores?.contentIssues || 0),
+      missingFunnelStages: 0,
+      missingIntents: 0,
+      priorityFixes: priorityItems.length,
+    };
+    return {
+      range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
+      totals,
+      contentCoverageBand: scoreSnapshot.scores?.contentCoverageBand || 'Unknown',
+      gaps: issues.map((issue) => ({
+        label: String(issue.label || 'Content issue'),
+        detail: `${Number(issue.count || 1)} page${Number(issue.count || 1) === 1 ? '' : 's'}`,
+        severity: String(issue.severity || 'medium'),
+      })),
+      missingStages: [],
+      missingIntents: [],
+      priorityItems: priorityItems.map((issue) => ({
+        label: String(issue.label || 'Content issue'),
+        severity: String(issue.severity || 'high'),
+        detail: `${Number(issue.count || 1)} page${Number(issue.count || 1) === 1 ? '' : 's'}`,
+        pages: Array.isArray(issue.pages) ? issue.pages.map(String) : [],
+      })),
+      stageBreakdown: [],
+      recommendedFixes: priorityItems.slice(0, 3).map((issue) => `Address ${String(issue.label || 'content issue')}.`),
+      confidence: {
+        level: 'Medium',
+        score: Number(scoreSnapshot.evidence?.scoringInputs?.coverageConfidence || 0),
+      },
+      riskBand: deriveCoverageRiskBand(totals),
+      scoreSnapshot: {
+        id: scoreSnapshot.id,
+        modelVersion: scoreSnapshot.model_version,
+        generatedAt: scoreSnapshot.created_at ? new Date(scoreSnapshot.created_at).toISOString() : null,
+        dataCompleteness: scoreSnapshot.evidence?.dataCompleteness || null,
+      },
+    };
   }
 
   const rows = await sql`

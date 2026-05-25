@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { db } from '../db.js';
 import {
   buildLlmMentionsCompetitors,
@@ -18,6 +19,73 @@ const DEFAULT_SOURCE = 'chat_gpt';
  */
 const FALLBACK_LOCATION_CODE = 2840;
 const FALLBACK_LANGUAGE_CODE = 'en';
+
+function hashRequestParams(value) {
+  return createHash('sha256').update(JSON.stringify(value || {})).digest('hex');
+}
+
+function buildDomainTarget(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+function deriveSnapshotMeta(endpoint, body = {}) {
+  if (endpoint === 'locations_and_languages') return { targetType: 'meta', targetKey: 'locations_and_languages' };
+  const payload = body.payload || {};
+  if (endpoint === 'cross_aggregated_metrics' && Array.isArray(payload.targets)) {
+    const keys = payload.targets.map((item) => String(item?.aggregation_key || item?.domain || item?.keyword || '').trim()).filter(Boolean).sort();
+    return { targetType: 'competitors', targetKey: keys.join(',').slice(0, 255) || 'competitors' };
+  }
+  const target = Array.isArray(payload.target) ? payload.target[0] : null;
+  if (typeof target === 'string') {
+    const targetType = body.targetType === 'keyword' || body.targetType === 'url' ? body.targetType : 'domain';
+    return { targetType, targetKey: targetType === 'domain' ? buildDomainTarget(target) : target.trim().slice(0, 255) };
+  }
+  if (target && typeof target === 'object') {
+    if (target.domain) return { targetType: 'domain', targetKey: buildDomainTarget(target.domain) };
+    if (target.keyword) return { targetType: 'keyword', targetKey: String(target.keyword).trim().slice(0, 255) };
+    if (target.url) return { targetType: 'url', targetKey: String(target.url).trim().slice(0, 255) };
+  }
+  return { targetType: body.targetType || 'domain', targetKey: buildDomainTarget(body.targetKey || body.siteDomain || body.siteId || 'unknown') };
+}
+
+function sourceName(value) {
+  return value === 'google' || value === 'google_ai_overviews' ? 'google_ai_overviews' : 'chat_gpt';
+}
+
+function extractResultItems(responseData) {
+  const tasks = Array.isArray(responseData?.tasks) ? responseData.tasks : [];
+  return tasks.flatMap((task) => (Array.isArray(task?.result) ? task.result : []));
+}
+
+function metricValue(row, ...keys) {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
+}
+
+function summarizeMetrics(items) {
+  return items.reduce(
+    (sum, row) => ({
+      mentions: sum.mentions + metricValue(row, 'mentions', 'mention_count'),
+      citations: sum.citations + metricValue(row, 'citations', 'citation_count'),
+      citedPages: sum.citedPages + metricValue(row, 'cited_pages', 'citedPages'),
+      aiSearchVolume: sum.aiSearchVolume + metricValue(row, 'ai_search_volume', 'aiSearchVolume'),
+      impressions: sum.impressions + metricValue(row, 'impressions'),
+    }),
+    { mentions: 0, citations: 0, citedPages: 0, aiSearchVolume: 0, impressions: 0 }
+  );
+}
 
 async function loadDefaultLocaleForSite(siteId, source) {
   if (!siteId) return { locationCode: null, languageCode: null };
@@ -287,7 +355,7 @@ export async function listRawSnapshots(search) {
   const limit = Math.max(1, Math.min(Number(search.get('limit') || 50), 100));
   const rows = siteId
     ? await sql`
-        SELECT id, site_id, endpoint, target_key, request_params, response_data,
+        SELECT id, site_id, endpoint, target_type, target_key, request_params, response_data,
                status, source, source_context, fetched_at, expires_at, created_at
         FROM llm_mentions_snapshots
         WHERE site_id = ${siteId}::uuid
@@ -295,7 +363,7 @@ export async function listRawSnapshots(search) {
         LIMIT ${limit}
       `
     : await sql`
-        SELECT id, site_id, endpoint, target_key, request_params, response_data,
+        SELECT id, site_id, endpoint, target_type, target_key, request_params, response_data,
                status, source, source_context, fetched_at, expires_at, created_at
         FROM llm_mentions_snapshots
         ORDER BY fetched_at DESC
@@ -311,6 +379,7 @@ function snapshotRow(row) {
     snapshotId: row.id,
     siteId: row.site_id,
     endpoint: row.endpoint,
+    targetType: row.target_type,
     targetKey: row.target_key,
     requestParams: row.request_params,
     responseData: row.response_data,
@@ -453,25 +522,119 @@ export async function runRawRequest(body = {}, search = new URLSearchParams()) {
 
 async function persistRawSnapshot({ siteId, endpoint, body, responseData, source }) {
   const sql = db();
-  await sql`
+  const { targetType, targetKey } = deriveSnapshotMeta(endpoint, body);
+  const requestParams = {
+    ...(body.payload && typeof body.payload === 'object' ? body.payload : {}),
+    __gatewayBody: body,
+  };
+  const paramsHash = hashRequestParams(requestParams);
+  const sourceContext = body.sourceContext || 'manual';
+  const [snapshot] = await sql`
     INSERT INTO llm_mentions_snapshots (
-      site_id, endpoint, target_key, request_params, response_data,
+      site_id, endpoint, target_type, target_key, params_hash, request_params, response_data,
       status, source, source_context, fetched_at, expires_at, created_at
     )
     VALUES (
       ${siteId}::uuid,
       ${endpoint},
-      ${body.targetType || null},
-      ${sql.json(body)},
+      ${targetType},
+      ${targetKey},
+      ${paramsHash},
+      ${sql.json(requestParams)},
       ${sql.json(responseData)},
       'success',
-      ${source || DEFAULT_SOURCE},
-      ${body.sourceContext || 'manual'},
+      'dataforseo',
+      ${sourceContext},
       now(),
       now() + interval '6 hours',
       now()
     )
+    RETURNING id, fetched_at
   `;
+  await syncRollupsAfterRawSnapshot({
+    siteId,
+    endpoint,
+    snapshotId: snapshot?.id,
+    fetchedAt: snapshot?.fetched_at || new Date(),
+    responseData,
+    source: sourceName(source),
+    requestParams,
+  }).catch((error) => {
+    console.error('persistRawSnapshot rollup sync failed (non-fatal):', error?.message || error);
+  });
+}
+
+async function syncRollupsAfterRawSnapshot({ siteId, endpoint, fetchedAt, responseData, source, requestParams }) {
+  const sql = db();
+  const items = extractResultItems(responseData);
+  const day = new Date(fetchedAt);
+  const locationCode = Number(requestParams.location_code || FALLBACK_LOCATION_CODE);
+  const languageCode = requestParams.language_code || FALLBACK_LANGUAGE_CODE;
+  const upsertRollup = (rollupType, payload) => sql`
+    INSERT INTO llm_mentions_rollups_daily (
+      site_id, day, rollup_type, source, location_code, language_code, payload, updated_at
+    )
+    VALUES (
+      ${siteId}::uuid,
+      ${day},
+      ${rollupType},
+      ${source},
+      ${locationCode},
+      ${languageCode},
+      ${sql.json(payload)},
+      now()
+    )
+    ON CONFLICT (site_id, day, rollup_type, source, location_code, language_code)
+    DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()
+  `;
+
+  if (endpoint === 'aggregated_metrics') {
+    const metrics = summarizeMetrics(items);
+    await upsertRollup('summary', {
+      metrics,
+      platformBreakdown: [{ source, ...metrics }],
+      lastUpdatedAt: new Date(fetchedAt).toISOString(),
+    });
+  } else if (endpoint === 'top_domains') {
+    await upsertRollup('top_domains', {
+      topDomains: items
+        .map((row) => ({
+          domain: row.domain || row.target || row.source_domain,
+          mentions: metricValue(row, 'mentions', 'mention_count'),
+          aiSearchVolume: metricValue(row, 'ai_search_volume', 'aiSearchVolume'),
+          impressions: metricValue(row, 'impressions'),
+        }))
+        .filter((row) => row.domain)
+        .slice(0, 40),
+    });
+  } else if (endpoint === 'top_pages') {
+    await upsertRollup('top_pages', {
+      topPages: items
+        .map((row) => ({
+          url: row.url || row.page || row.source_url,
+          title: row.title || null,
+          mentions: metricValue(row, 'mentions', 'mention_count'),
+          citations: metricValue(row, 'citations', 'citation_count'),
+          aiSearchVolume: metricValue(row, 'ai_search_volume', 'aiSearchVolume'),
+          impressions: metricValue(row, 'impressions'),
+        }))
+        .filter((row) => row.url)
+        .slice(0, 40),
+    });
+  } else if (endpoint === 'cross_aggregated_metrics') {
+    await upsertRollup('competitors', {
+      comparison: items
+        .map((row) => ({
+          target: row.target || row.domain || row.keyword || row.aggregation_key,
+          mentions: metricValue(row, 'mentions', 'mention_count'),
+          aiSearchVolume: metricValue(row, 'ai_search_volume', 'aiSearchVolume'),
+          impressions: metricValue(row, 'impressions'),
+          shareOfVoice: typeof row.share_of_voice === 'number' ? row.share_of_voice : null,
+        }))
+        .filter((row) => row.target)
+        .slice(0, 40),
+    });
+  }
 }
 
 function promptRow(row) {

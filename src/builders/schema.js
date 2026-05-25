@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { boundsFromInput } from '../dashboard-range.js';
 import { getScoreBand, getScoreSeverity } from '../lib/scoring.js';
+import { loadLatestSiteScoreSnapshot } from '../lib/site-score-snapshot.js';
 
 const TEMPLATE_KEYS = [
   { key: 'organization', label: 'Organization' },
@@ -142,6 +143,32 @@ export async function buildSchema(input) {
       broken: 0,
       templates: [],
     };
+  }
+
+  if (siteId) {
+    const snapshot = await loadLatestSiteScoreSnapshot({ siteId, start, end });
+    const schema = snapshot?.evidence?.schema || null;
+    if (schema && (Number(schema.completenessScore || 0) > 0 || Number(schema.qualityScore || 0) > 0)) {
+      const completenessScore = Number(schema.completenessScore || 0);
+      const qualityScore = Number(schema.qualityScore || 0);
+      return {
+        range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
+        completenessScore,
+        qualityScore,
+        band: getScoreBand(completenessScore),
+        severity: getScoreSeverity(completenessScore),
+        missing: 0,
+        broken: 0,
+        templates: [],
+        scoreSnapshot: {
+          id: snapshot.id,
+          modelVersion: snapshot.model_version,
+          generatedAt: snapshot.created_at ? new Date(snapshot.created_at).toISOString() : null,
+          dataCompleteness: snapshot.evidence?.dataCompleteness || null,
+          freshness: snapshot.evidence?.freshness || null,
+        },
+      };
+    }
   }
 
   const events = await sql`
