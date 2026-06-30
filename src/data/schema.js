@@ -14,6 +14,8 @@ export const REQUIRED_TABLES = [
   'llm_mentions_tracked_prompts',
   'llm_mentions_prompt_observations',
   'llm_mentions_rollups_daily',
+  'competitors',
+  'competitor_score_snapshots',
 ];
 
 export async function readExistingTables(tableNames = REQUIRED_TABLES) {

@@ -24,6 +24,12 @@ import {
   postTelemetryDailyRollup,
 } from './services/telemetry-daily-rollup.js';
 import { materializeSiteScores } from './services/site-score-materialize.js';
+import { materializeCompetitorScores } from './services/competitor-score-materialize.js';
+import {
+  readCompetitorGaps,
+  readCompetitorScorecards,
+  readCompetitorTrends,
+} from './services/competitors.js';
 import {
   patchTrackedPrompt,
   readLegacyLlmMentions,
@@ -87,6 +93,10 @@ export async function route(request) {
   if (method === 'GET' && url.pathname === '/v1/dashboard/export-data') return readDashboardExportData(request);
   if (method === 'GET' && url.pathname === '/v1/dashboard/export') return readDashboardExport(request);
 
+  if (method === 'GET' && url.pathname === '/v1/competitors/scorecards') return readCompetitorScorecards(request);
+  if (method === 'GET' && url.pathname === '/v1/competitors/trends') return readCompetitorTrends(request);
+  if (method === 'GET' && url.pathname === '/v1/competitors/gaps') return readCompetitorGaps(request);
+
   if (method === 'GET' && url.pathname === '/v1/llm-mentions/overview') return readLlmMentionsOverview(request);
   if (method === 'GET' && url.pathname === '/v1/llm-mentions/bundle') return readLlmMentionsBundle(request);
   if (method === 'GET' && url.pathname === '/v1/llm-mentions') return readLegacyLlmMentions(request);
@@ -117,6 +127,7 @@ export async function route(request) {
   if (method === 'POST' && url.pathname === '/internal/refresh/prewarm') return prewarmDashboard(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/process') return processRefreshJobs(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/materialize/site-scores') return materializeSiteScores(await readJson(request));
+  if (method === 'POST' && url.pathname === '/internal/materialize/competitor-scores') return materializeCompetitorScores(await readJson(request));
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/refresh') {
     return runDashboardCronRefresh(method === 'POST' ? await readJson(request) : {});
   }

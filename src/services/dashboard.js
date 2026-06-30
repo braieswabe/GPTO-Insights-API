@@ -21,6 +21,7 @@ import {
 import { runTelemetryRollupCronWindow } from './telemetry-daily-rollup.js';
 import { materializeSignalsOnGptoSuite } from './gpto-signal-materialize.js';
 import { materializeSiteScores } from './site-score-materialize.js';
+import { materializeCompetitorScores } from './competitor-score-materialize.js';
 import { composeReportPayload } from '../pdf/compose.js';
 import { renderDashboardReport } from '../pdf/render.js';
 
@@ -804,6 +805,7 @@ export async function runDashboardCronRefresh(body = {}) {
 
   let suiteMaterialize = null;
   let siteScoreMaterialize = null;
+  let competitorScoreMaterialize = null;
   if (body.skipSuiteMaterialize === true) {
     suiteMaterialize = {
       skipped: true,
@@ -847,6 +849,30 @@ export async function runDashboardCronRefresh(body = {}) {
     };
   }
 
+  try {
+    competitorScoreMaterialize = await materializeCompetitorScores({
+      siteId: body.siteId || null,
+      ranges: Array.isArray(body.ranges)
+        ? body.ranges
+        : process.env.GPTO_COMPETITOR_MATERIALIZE_RANGES?.split(',').map((s) => s.trim()),
+      skipCrawl: body.skipCompetitorCrawl === true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('runDashboardCronRefresh competitor score materialize failed:', message);
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: message,
+        telemetryRollup,
+        suiteMaterialize,
+        siteScoreMaterialize: siteScoreMaterialize?.body || siteScoreMaterialize,
+        competitorScoreMaterialize: null,
+      },
+    };
+  }
+
   const [prewarm, queuedJobs] = await Promise.all([
     prewarmDashboard({ limit: body.prewarmLimit || body.limit || process.env.DASHBOARD_PREWARM_LIMIT || 20, force: body.forcePrewarm === true }),
     processRefreshJobs({ limit: body.jobLimit || 5 }),
@@ -856,6 +882,7 @@ export async function runDashboardCronRefresh(body = {}) {
     telemetryRollup,
     suiteMaterialize,
     siteScoreMaterialize: siteScoreMaterialize?.body || siteScoreMaterialize,
+    competitorScoreMaterialize: competitorScoreMaterialize?.body || competitorScoreMaterialize,
     prewarm: prewarm.body,
     queuedJobs: queuedJobs.body,
   });
