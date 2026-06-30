@@ -1,4 +1,4 @@
-export const MODEL_VERSION = 'gpto.dashboard.insights.v2.1';
+export const MODEL_VERSION = 'gpto.dashboard.insights.v2.2';
 export const EMPTY_SITE_UUID = '00000000-0000-0000-0000-000000000000';
 
 export const DASHBOARD_MODULES = [

@@ -1,3 +1,4 @@
+import { aggregateValidTelemetryTopPages } from '../lib/telemetry-pages.js';
 import { db } from '../db.js';
 import { boundsFromInput, boundsDaySpan } from '../dashboard-range.js';
 import { buildTelemetry } from './telemetry.js';
@@ -169,7 +170,7 @@ function buildCustomerInsights({
         label: telemetry?.trend?.visits > 0 ? 'Increasing' : telemetry?.trend?.visits < 0 ? 'Decreasing' : 'Stable',
         direction: trendSymbol(telemetry?.trend?.visits || 0),
       },
-      topPages: asArray(telemetry?.topPages).map((page) => ({
+      topPages: aggregateValidTelemetryTopPages(asArray(telemetry?.topPages)).map((page) => ({
         url: page.url,
         title: page.title || null,
         views: page.views ?? page.count ?? 0,

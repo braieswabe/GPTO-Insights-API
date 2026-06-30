@@ -1,3 +1,4 @@
+import { aggregateValidTelemetryTopPages } from '../lib/telemetry-pages.js';
 import React from 'react';
 import { Document, Page, Text, View, StyleSheet, pdf } from '@react-pdf/renderer';
 import { formatDateTime, formatNumber, formatPercent, formatScore, sentenceCase, shorten } from './format.js';
@@ -260,7 +261,7 @@ function telemetryPage(payload) {
   const telemetry = payload.telemetry || {};
   const totals = telemetry.totals || {};
   const trend = telemetry.trend || {};
-  const topPages = telemetry.topPages || [];
+  const topPages = aggregateValidTelemetryTopPages(telemetry.topPages || []);
   return sectionPage('Telemetry', 'First-party activity and journey signals for the selected period.',
     e(View, null,
       metricGrid([

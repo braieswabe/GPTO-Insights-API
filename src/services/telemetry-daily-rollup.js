@@ -1,10 +1,53 @@
 import { db } from '../db.js';
 import { ok } from '../contracts.js';
 import { assertUtcRangeWithin, utcDayExclusiveEnd, utcDayStart } from '../telemetry-rollup-dates.js';
+import {
+  aggregateValidTelemetryTopPages,
+  isTelemetryPageEligibleForPageViewTotals,
+  isTelemetryPageEligibleForTopPages,
+  isWordPressAdminOrEditorTelemetryUrl,
+} from '../lib/telemetry-pages.js';
 
 const DEFAULT_MAX_SPAN_DAYS = 366;
 const DEFAULT_MAX_SITES = 80;
 const DEFAULT_MAX_RUNS = 500;
+
+function safeRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function stringValue(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function eventPage(row) {
+  const page = safeRecord(row.page);
+  const context = safeRecord(row.context);
+  const metrics = safeRecord(row.metrics);
+  const url =
+    stringValue(page.url) ||
+    stringValue(page.href) ||
+    stringValue(context.url) ||
+    stringValue(metrics.url) ||
+    'unknown';
+  return {
+    url,
+    path: stringValue(page.path) || stringValue(context.path),
+    title: stringValue(page.title) || stringValue(context.title),
+    isNotFound: page.isNotFound,
+  };
+}
+
+function eventIntent(row) {
+  const context = safeRecord(row.context);
+  const metrics = safeRecord(row.metrics);
+  return stringValue(context.intent) || stringValue(metrics.intent) || stringValue(metrics.detectedIntent);
+}
+
+function incrementMap(map, key, amount = 1) {
+  map.set(key, (map.get(key) || 0) + amount);
+}
+
 
 /**
  * @param {import('postgres').Sql} sql
@@ -66,93 +109,59 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
       updated_at = now()
   `;
 
-  const [agg] = await tx`
-    SELECT
-      COUNT(*)::int AS events_scanned,
-      MAX("timestamp") AS max_event_timestamp,
-      COUNT(*) FILTER (WHERE event_type = 'page_view')::int AS page_views,
-      COUNT(*) FILTER (WHERE event_type = 'search')::int AS searches,
-      COUNT(*) FILTER (WHERE event_type = 'interaction')::int AS interactions,
-      COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int AS visits_sessions
+  const eventRows = await tx`
+    SELECT event_type, session_id, timestamp, page, context, metrics, search
     FROM telemetry_events
     WHERE site_id = ${siteId}::uuid
       AND "timestamp" >= ${dayStart}
       AND "timestamp" < ${dayEnd}
   `;
 
-  const eventsScanned = Number(agg?.events_scanned || 0);
-  const pageViews = Number(agg?.page_views || 0);
-  const visitsSessions = Number(agg?.visits_sessions || 0);
-  const visits = visitsSessions > 0 ? visitsSessions : pageViews;
+  const eventsScanned = eventRows.length;
+  let maxEventTimestamp = null;
+  let pageViews = 0;
+  let searches = 0;
+  let interactions = 0;
+  const visitsSet = new Set();
+  const topPageCandidates = [];
+  const intents = new Map();
 
-  const [topPagesRow] = await tx`
-    WITH pages AS (
-      SELECT
-        NULLIF(
-          TRIM(
-            COALESCE(
-              NULLIF(te.page->>'url', ''),
-              NULLIF(te.context->>'url', '')
-            )
-          ),
-          ''
-        ) AS url_raw,
-        COUNT(*)::int AS cnt
-      FROM telemetry_events te
-      WHERE te.site_id = ${siteId}::uuid
-        AND te.timestamp >= ${dayStart}
-        AND te.timestamp < ${dayEnd}
-        AND te.event_type = 'page_view'
-      GROUP BY 1
-    )
-    SELECT COALESCE(
-      (
-        SELECT jsonb_agg(jsonb_build_object('url', ranked.url_raw, 'count', ranked.cnt))
-        FROM (
-          SELECT url_raw, cnt
-          FROM pages
-          WHERE url_raw IS NOT NULL
-          ORDER BY cnt DESC
-          LIMIT 25
-        ) ranked
-      ),
-      '[]'::jsonb
-    ) AS top_pages
-  `;
+  for (const row of eventRows) {
+    if (!maxEventTimestamp || new Date(row.timestamp) > new Date(maxEventTimestamp)) {
+      maxEventTimestamp = row.timestamp;
+    }
 
-  const [topIntentsRow] = await tx`
-    WITH intents AS (
-      SELECT
-        NULLIF(
-          TRIM(
-            COALESCE(
-              NULLIF(te.context->>'intent', ''),
-              NULLIF(te.metrics->>'intent', '')
-            )
-          ),
-          ''
-        ) AS intent_raw,
-        COUNT(*)::int AS cnt
-      FROM telemetry_events te
-      WHERE te.site_id = ${siteId}::uuid
-        AND te.timestamp >= ${dayStart}
-        AND te.timestamp < ${dayEnd}
-      GROUP BY 1
-    )
-    SELECT COALESCE(
-      (
-        SELECT jsonb_agg(jsonb_build_object('intent', ranked.intent_raw, 'count', ranked.cnt))
-        FROM (
-          SELECT intent_raw, cnt
-          FROM intents
-          WHERE intent_raw IS NOT NULL
-          ORDER BY cnt DESC
-          LIMIT 15
-        ) ranked
-      ),
-      '[]'::jsonb
-    ) AS top_intents
-  `;
+    const page = eventPage(row);
+    if (isWordPressAdminOrEditorTelemetryUrl(page.url)) continue;
+
+    const eventType = String(row.event_type || '').toLowerCase();
+    let countsForVisit = false;
+    if (eventType === 'page_view' || eventType === 'pageview') {
+      if (!isTelemetryPageEligibleForPageViewTotals(page)) continue;
+      pageViews += 1;
+      countsForVisit = true;
+      if (isTelemetryPageEligibleForTopPages(page, row.context)) {
+        topPageCandidates.push({ ...page, count: 1, views: 1 });
+      }
+    } else if (eventType === 'search') {
+      searches += 1;
+      countsForVisit = true;
+    } else {
+      interactions += 1;
+      countsForVisit = true;
+    }
+
+    if (countsForVisit && row.session_id) visitsSet.add(String(row.session_id));
+    const intent = eventIntent(row);
+    if (countsForVisit && intent) incrementMap(intents, intent);
+  }
+
+  const visits = visitsSet.size || pageViews || interactions || searches;
+  const topPages = aggregateValidTelemetryTopPages(topPageCandidates, { limit: 25 });
+  const topIntents = Array.from(intents.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 15)
+    .map(([intent, count]) => ({ intent, count }));
 
   await tx`
     DELETE FROM dashboard_rollups_daily
@@ -169,10 +178,10 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
       ${dayStart},
       ${visits},
       ${pageViews},
-      ${Number(agg?.searches || 0)},
-      ${Number(agg?.interactions || 0)},
-      ${tx.json(Array.isArray(topPagesRow?.top_pages) ? topPagesRow.top_pages : [])},
-      ${tx.json(Array.isArray(topIntentsRow?.top_intents) ? topIntentsRow.top_intents : [])},
+      ${searches},
+      ${interactions},
+      ${tx.json(topPages)},
+      ${tx.json(topIntents)},
       NULL
     )
   `;
@@ -182,19 +191,19 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
     SET status = 'complete',
         finished_at = now(),
         events_scanned = ${eventsScanned},
-        max_event_timestamp = ${agg?.max_event_timestamp ?? null},
+        max_event_timestamp = ${maxEventTimestamp ?? null},
         error = NULL,
         updated_at = now()
     WHERE site_id = ${siteId}::uuid AND day = ${dayIso}::date
   `;
 
-  if (agg?.max_event_timestamp) {
+  if (maxEventTimestamp) {
     await tx`
       UPDATE sites
       SET
         last_telemetry_at = GREATEST(
           COALESCE(last_telemetry_at, to_timestamp(0)),
-          ${agg.max_event_timestamp}
+          ${maxEventTimestamp}
         ),
         updated_at = NOW()
       WHERE id = ${siteId}::uuid
@@ -206,11 +215,11 @@ export async function rollupSiteDayTx(tx, siteId, dayIso, { force = false } = {}
     siteId,
     day: dayIso,
     eventsScanned,
-    maxEventTimestamp: agg?.max_event_timestamp ? new Date(agg.max_event_timestamp).toISOString() : null,
+    maxEventTimestamp: maxEventTimestamp ? new Date(maxEventTimestamp).toISOString() : null,
     visits,
     pageViews,
-    searches: Number(agg?.searches || 0),
-    interactions: Number(agg?.interactions || 0),
+    searches,
+    interactions,
   };
 }
 
