@@ -1,11 +1,11 @@
 const DATAFORSEO_BASE_URL = 'https://api.dataforseo.com';
 
 const LLM_MENTIONS_ENDPOINTS = {
-  aggregated_metrics: '/v3/ai_optimization/llm_mentions/aggregated_metrics/live',
+  aggregated_metrics: '/v3/ai_optimization/llm_mentions/target_metrics/live',
   cross_aggregated_metrics: '/v3/ai_optimization/llm_mentions/cross_aggregated_metrics/live',
-  top_domains: '/v3/ai_optimization/llm_mentions/top_domains/live',
-  top_pages: '/v3/ai_optimization/llm_mentions/top_pages/live',
-  search: '/v3/ai_optimization/llm_mentions/search/live',
+  top_domains: '/v3/ai_optimization/llm_mentions/top_mentioned_domains/live',
+  top_pages: '/v3/ai_optimization/llm_mentions/top_mentioned_pages/live',
+  search: '/v3/ai_optimization/llm_mentions/search_mentions/live',
 };
 
 export function dataForSeoAuthHeader() {

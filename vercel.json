@@ -20,6 +20,12 @@
     },
     "api/internal/cron/rollup-telemetry.js": {
       "maxDuration": 120
+    },
+    "api/internal/cron/dataforseo-enqueue.js": {
+      "maxDuration": 60
+    },
+    "api/internal/cron/dataforseo-worker.js": {
+      "maxDuration": 300
     }
   },
   "crons": [
@@ -30,6 +36,14 @@
     {
       "path": "/api/internal/cron/rollup-telemetry",
       "schedule": "5 2 * * *"
+    },
+    {
+      "path": "/internal/cron/dataforseo-enqueue",
+      "schedule": "0 16 * * *"
+    },
+    {
+      "path": "/internal/cron/dataforseo-worker",
+      "schedule": "* * * * *"
     }
   ]
 }

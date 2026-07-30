@@ -16,6 +16,8 @@ export const REQUIRED_TABLES = [
   'llm_mentions_rollups_daily',
   'competitors',
   'competitor_score_snapshots',
+  'dataforseo_automation_batches',
+  'dataforseo_automation_jobs',
 ];
 
 export async function readExistingTables(tableNames = REQUIRED_TABLES) {

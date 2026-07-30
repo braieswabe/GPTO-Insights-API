@@ -30,6 +30,8 @@ The server starts at `http://127.0.0.1:4011`.
 | `DASHBOARD_PREWARM_LIMIT` | No | Max dashboard cache targets to prewarm per cron run (default: 20) |
 | `DATAFORSEO_AUTH_HEADER` | No | Basic auth header for DataForSEO live LLM Mentions calls |
 | `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` | No | Alternative DataForSEO credentials |
+| `DATAFORSEO_AUTOMATION_ENABLED` | No | Set to `1` after the automation migration and one-site smoke test |
+| `GPTO_DATAFORSEO_AUTOMATION_TOKEN` | For automation | Dedicated bearer shared with the GPTO dashboard executor |
 | `TELEMETRY_ROLLUP_WITH_DASHBOARD_CRON` | No | When `1`, `/internal/cron/refresh` also runs a bounded UTC telemetry rollup before prewarm |
 | `TELEMETRY_ROLLUP_CRON_DAYS_BACK` | No | UTC days to cover in rollup cron (default `2`) |
 | `TELEMETRY_ROLLUP_CRON_MAX_SITES` | No | Max active sites per rollup cron run (default `40`) |

@@ -48,6 +48,13 @@ import {
   writeRawRequest,
   writeTrackedPrompt,
 } from './services/llm-mentions.js';
+import {
+  enqueueManualDataForSeoBatch,
+  enqueueScheduledDataForSeoBatch,
+  readDataForSeoBatch,
+  retryFailedDataForSeoBatch,
+  runDataForSeoAutomationWorker,
+} from './services/dataforseo-automation.js';
 
 function requireAuthOrThrow(request) {
   const auth = requireInternalAuth(request);
@@ -56,6 +63,13 @@ function requireAuthOrThrow(request) {
     error.statusCode = auth.status;
     throw error;
   }
+}
+
+function requireCronOrInternalAuth(request) {
+  const authorization = request.headers.authorization || '';
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && authorization === `Bearer ${cronSecret}`) return;
+  requireAuthOrThrow(request);
 }
 
 export async function route(request) {
@@ -76,7 +90,10 @@ export async function route(request) {
   }
 
   if (url.pathname.startsWith('/internal/') || url.pathname.startsWith('/v1/')) {
-    requireAuthOrThrow(request);
+    const isDataForSeoCron = url.pathname === '/internal/cron/dataforseo-enqueue'
+      || url.pathname === '/internal/cron/dataforseo-worker';
+    if (isDataForSeoCron) requireCronOrInternalAuth(request);
+    else requireAuthOrThrow(request);
   }
 
   if (method === 'GET' && url.pathname === '/v1/dashboard/overview') return readDashboardOverview(request);
@@ -126,6 +143,23 @@ export async function route(request) {
   if (method === 'POST' && url.pathname === '/internal/refresh/llm-mentions') return refreshLlmMentions(request, await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/prewarm') return prewarmDashboard(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/process') return processRefreshJobs(await readJson(request));
+  if (method === 'POST' && url.pathname === '/internal/dataforseo/runs') {
+    return { status: 202, body: await enqueueManualDataForSeoBatch(await readJson(request)) };
+  }
+  const dataForSeoRunMatch = url.pathname.match(/^\/internal\/dataforseo\/runs\/([^/]+)$/);
+  if (method === 'GET' && dataForSeoRunMatch) {
+    return { status: 200, body: await readDataForSeoBatch(dataForSeoRunMatch[1]) };
+  }
+  const dataForSeoRetryMatch = url.pathname.match(/^\/internal\/dataforseo\/runs\/([^/]+)\/retry$/);
+  if (method === 'POST' && dataForSeoRetryMatch) {
+    return { status: 200, body: await retryFailedDataForSeoBatch(dataForSeoRetryMatch[1]) };
+  }
+  if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/dataforseo-enqueue') {
+    return { status: 200, body: await enqueueScheduledDataForSeoBatch() };
+  }
+  if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/dataforseo-worker') {
+    return { status: 200, body: await runDataForSeoAutomationWorker() };
+  }
   if (method === 'POST' && url.pathname === '/internal/materialize/site-scores') return materializeSiteScores(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/materialize/competitor-scores') return materializeCompetitorScores(await readJson(request));
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/refresh') {
