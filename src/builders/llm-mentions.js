@@ -45,6 +45,34 @@ function freshnessMultiplier(ageDays) {
   return 1;
 }
 
+export function selectBalancedSearchObservations(rows, sources, limit = 6) {
+  const boundedLimit = Math.max(0, Number(limit) || 0);
+  if (!boundedLimit) return [];
+  const queues = sources.map((source) => rows.filter((row) => row.source === source));
+  const selected = [];
+  const selectedRows = new Set();
+  while (selected.length < boundedLimit) {
+    let progressed = false;
+    for (const queue of queues) {
+      const row = queue.shift();
+      if (!row) continue;
+      selected.push(row);
+      selectedRows.add(row);
+      progressed = true;
+      if (selected.length >= boundedLimit) break;
+    }
+    if (!progressed) break;
+  }
+  if (selected.length < boundedLimit) {
+    for (const row of rows) {
+      if (selectedRows.has(row)) continue;
+      selected.push(row);
+      if (selected.length >= boundedLimit) break;
+    }
+  }
+  return selected;
+}
+
 function endpointCoverage(endpoint, snapshot, now) {
   const ageDays = ageDaysFrom(now, snapshot?.fetchedAt || null);
   return {
@@ -481,7 +509,7 @@ export async function buildLlmMentionsOverview({
 
   const siteDomain = siteRows[0]?.domain || null;
   const baseSearchExamples = observations.length > 0
-    ? observations.slice(0, 6).map((r) => ({
+    ? selectBalancedSearchObservations(observations, sources, 6).map((r) => ({
         question: r.question,
         answerPreview: r.answer_preview,
         platform: r.source,
