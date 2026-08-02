@@ -161,7 +161,7 @@ async function loadLlmMentionsSignals(input, sql) {
       days,
       windowStart: start,
       windowEnd: end,
-      sources: ['chat_gpt', 'google_ai_overviews'],
+      sources: ['chat_gpt', 'google_ai_overviews', 'gemini', 'claude'],
     });
     if (!overview) return null;
     const ai = overview.aiVisibility || null;

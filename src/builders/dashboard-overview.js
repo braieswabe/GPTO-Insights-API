@@ -29,7 +29,7 @@ export async function buildDashboardOverview(input) {
       days: spanDays,
       windowStart: start,
       windowEnd: end,
-      sources: ['chat_gpt', 'google_ai_overviews'],
+      sources: ['chat_gpt', 'google_ai_overviews', 'gemini', 'claude'],
     }).catch(() => null);
   }
 

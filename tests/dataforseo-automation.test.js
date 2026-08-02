@@ -2,8 +2,10 @@ import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DATAFORSEO_AUTOMATION_ENDPOINTS,
+  DATAFORSEO_AUTOMATION_SOURCES,
   dataForSeoAutomationEnabled,
   manilaScheduleKey,
+  normalizeManualDataForSeoSource,
 } from '../src/services/dataforseo-automation.js';
 
 const originalEnabled = process.env.DATAFORSEO_AUTOMATION_ENABLED;
@@ -28,10 +30,21 @@ describe('DataForSEO automation configuration', () => {
     ]);
   });
 
+  it('schedules both DataForSEO visibility platforms', () => {
+    assert.deepEqual(DATAFORSEO_AUTOMATION_SOURCES, ['chat_gpt', 'google_ai_overviews']);
+  });
+
   it('is opt-in', () => {
     process.env.DATAFORSEO_AUTOMATION_ENABLED = '0';
     assert.equal(dataForSeoAutomationEnabled(), false);
     process.env.DATAFORSEO_AUTOMATION_ENABLED = 'true';
     assert.equal(dataForSeoAutomationEnabled(), true);
+  });
+
+  it('keeps dashboard manual runs ChatGPT-only by default and accepts an internal Google override', () => {
+    assert.equal(normalizeManualDataForSeoSource(undefined), 'chat_gpt');
+    assert.equal(normalizeManualDataForSeoSource('chat_gpt'), 'chat_gpt');
+    assert.equal(normalizeManualDataForSeoSource('google_ai_overviews'), 'google_ai_overviews');
+    assert.throws(() => normalizeManualDataForSeoSource('gemini'), /source must be one of/);
   });
 });

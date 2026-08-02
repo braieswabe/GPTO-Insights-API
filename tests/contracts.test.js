@@ -5,8 +5,8 @@ import { canCallDataForSeo, dataForSeoAuthHeader } from '../src/services/datafor
 
 describe('contract helpers', () => {
   it('normalizes LLM sources to supported values', () => {
-    assert.deepEqual(normalizeSources('chat_gpt,google_ai_overviews,gemini'), ['chat_gpt', 'google_ai_overviews']);
-    assert.deepEqual(normalizeSources('unknown'), ['chat_gpt', 'google_ai_overviews']);
+    assert.deepEqual(normalizeSources('chat_gpt,google_ai_overviews,gemini'), ['chat_gpt', 'google_ai_overviews', 'gemini']);
+    assert.deepEqual(normalizeSources('unknown'), ['chat_gpt', 'google_ai_overviews', 'gemini', 'claude']);
   });
 
   it('parses bounded positive integers', () => {

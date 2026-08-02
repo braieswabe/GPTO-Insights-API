@@ -1,4 +1,12 @@
-export const DEFAULT_LLM_MENTION_SOURCES = ['chat_gpt', 'google_ai_overviews'];
+export const DEFAULT_LLM_MENTION_SOURCES = ['chat_gpt', 'google_ai_overviews', 'gemini', 'claude'];
+const ALLOWED_LLM_MENTION_SOURCES = new Set([
+  ...DEFAULT_LLM_MENTION_SOURCES,
+  'openai_ai_mentions',
+  'openai_chatgpt',
+  'openai_google_ai_overviews',
+  'openai_gemini',
+  'openai_claude',
+]);
 
 export function requireSiteId(searchOrValue) {
   const value = typeof searchOrValue === 'string' ? searchOrValue : searchOrValue?.get?.('siteId');
@@ -14,7 +22,7 @@ export function normalizeSources(value, fallback = DEFAULT_LLM_MENTION_SOURCES) 
   const raw = Array.isArray(value) ? value : String(value || '').split(',');
   const sources = raw
     .map((source) => String(source || '').trim())
-    .filter((source) => source === 'chat_gpt' || source === 'google_ai_overviews');
+    .filter((source) => ALLOWED_LLM_MENTION_SOURCES.has(source));
   return sources.length > 0 ? sources : fallback;
 }
 

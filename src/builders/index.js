@@ -37,7 +37,7 @@ export async function buildModule(moduleKey, input) {
       days: Number(input.params?.days || spanDays),
       windowStart: start,
       windowEnd: end,
-      sources: Array.isArray(input.params?.sources) ? input.params.sources : ['chat_gpt', 'google_ai_overviews'],
+      sources: Array.isArray(input.params?.sources) ? input.params.sources : ['chat_gpt', 'google_ai_overviews', 'gemini', 'claude'],
     });
   }
   const error = new Error(`Unsupported module: ${moduleKey}`);

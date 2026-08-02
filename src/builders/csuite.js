@@ -168,7 +168,7 @@ export async function buildCsuite(input) {
   const [authority, confusion, llmMentions, telemetry, competitors, priorAuthority, monthlyGrowth, monthlyInsights] = await Promise.all([
     buildAuthority(input),
     buildConfusion(input),
-    buildLlmMentionsOverview({ siteId, days, windowStart: start, windowEnd: end, sources: ['chat_gpt', 'google_ai_overviews'] }).catch(() => null),
+    buildLlmMentionsOverview({ siteId, days, windowStart: start, windowEnd: end, sources: ['chat_gpt', 'google_ai_overviews', 'gemini', 'claude'] }).catch(() => null),
     buildTelemetry(input),
     buildLlmMentionsCompetitors({ siteId, source: 'chat_gpt' }).catch(() => null),
     loadPriorAuthority(sql, [siteId], days, end),

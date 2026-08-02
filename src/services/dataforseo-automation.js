@@ -8,6 +8,8 @@ export const DATAFORSEO_AUTOMATION_ENDPOINTS = [
   'search',
 ];
 
+export const DATAFORSEO_AUTOMATION_SOURCES = ['chat_gpt', 'google_ai_overviews'];
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function dataForSeoAutomationEnabled() {
@@ -40,6 +42,16 @@ function requireUuid(value, label) {
     throw error;
   }
   return String(value);
+}
+
+export function normalizeManualDataForSeoSource(value) {
+  if (value === undefined || value === null || value === '') return 'chat_gpt';
+  if (!DATAFORSEO_AUTOMATION_SOURCES.includes(value)) {
+    const error = new Error(`source must be one of: ${DATAFORSEO_AUTOMATION_SOURCES.join(', ')}`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return value;
 }
 
 async function updateBatchTotals(sql, batchId) {
@@ -83,36 +95,51 @@ export async function enqueueScheduledDataForSeoBatch(options = {}) {
   const sql = db();
   const scheduleKey = options.scheduleKey || manilaScheduleKey(options.now);
   return sql.begin(async (tx) => {
-    const inserted = await tx`
-      INSERT INTO dataforseo_automation_batches (trigger, schedule_key, source, status)
-      VALUES ('scheduled', ${scheduleKey}, 'chat_gpt', 'queued')
-      ON CONFLICT (schedule_key, source) WHERE schedule_key IS NOT NULL DO NOTHING
-      RETURNING id
-    `;
-    const [existing] = inserted.length
-      ? inserted
-      : await tx`
-          SELECT id FROM dataforseo_automation_batches
-          WHERE schedule_key = ${scheduleKey} AND source = 'chat_gpt'
-          LIMIT 1
-        `;
-    const batchId = existing.id;
-    await tx`
-      INSERT INTO dataforseo_automation_jobs (batch_id, site_id, endpoint)
-      SELECT ${batchId}::uuid, s.id, endpoint
-      FROM sites s
-      CROSS JOIN unnest(${DATAFORSEO_AUTOMATION_ENDPOINTS}::text[]) AS endpoint
-      WHERE s.status = 'active'
-      ON CONFLICT (batch_id, site_id, endpoint) DO NOTHING
-    `;
-    const counts = await updateBatchTotals(tx, batchId);
-    return { ok: true, batchId, scheduleKey, duplicate: inserted.length === 0, ...counts };
+    const batches = [];
+    for (const source of DATAFORSEO_AUTOMATION_SOURCES) {
+      const inserted = await tx`
+        INSERT INTO dataforseo_automation_batches (trigger, schedule_key, source, status)
+        VALUES ('scheduled', ${scheduleKey}, ${source}, 'queued')
+        ON CONFLICT (schedule_key, source) WHERE schedule_key IS NOT NULL DO NOTHING
+        RETURNING id
+      `;
+      const [existing] = inserted.length
+        ? inserted
+        : await tx`
+            SELECT id FROM dataforseo_automation_batches
+            WHERE schedule_key = ${scheduleKey} AND source = ${source}
+            LIMIT 1
+          `;
+      const batchId = existing.id;
+      await tx`
+        INSERT INTO dataforseo_automation_jobs (batch_id, site_id, endpoint)
+        SELECT ${batchId}::uuid, s.id, endpoint
+        FROM sites s
+        CROSS JOIN unnest(${DATAFORSEO_AUTOMATION_ENDPOINTS}::text[]) AS endpoint
+        WHERE s.status = 'active'
+        ON CONFLICT (batch_id, site_id, endpoint) DO NOTHING
+      `;
+      const counts = await updateBatchTotals(tx, batchId);
+      batches.push({ batchId, source, duplicate: inserted.length === 0, ...counts });
+    }
+    return {
+      ok: true,
+      scheduleKey,
+      batches,
+      batchId: batches[0]?.batchId || null,
+      total: batches.reduce((sum, batch) => sum + batch.total, 0),
+      succeeded: batches.reduce((sum, batch) => sum + batch.succeeded, 0),
+      failed: batches.reduce((sum, batch) => sum + batch.failed, 0),
+      active: batches.reduce((sum, batch) => sum + batch.active, 0),
+      duplicate: batches.every((batch) => batch.duplicate),
+    };
   });
 }
 
 export async function enqueueManualDataForSeoBatch(body = {}) {
   requireEnabled();
   const siteId = requireUuid(body.siteId, 'siteId');
+  const source = normalizeManualDataForSeoSource(body.source);
   const requestedBy = UUID_RE.test(String(body.requestedBy || '')) ? String(body.requestedBy) : null;
   const sql = db();
   return sql.begin(async (tx) => {
@@ -124,7 +151,7 @@ export async function enqueueManualDataForSeoBatch(body = {}) {
     }
     const [batch] = await tx`
       INSERT INTO dataforseo_automation_batches (trigger, source, status, requested_by)
-      VALUES ('manual', 'chat_gpt', 'queued', ${requestedBy}::uuid)
+      VALUES ('manual', ${source}, 'queued', ${requestedBy}::uuid)
       RETURNING id
     `;
     await tx`
@@ -133,7 +160,7 @@ export async function enqueueManualDataForSeoBatch(body = {}) {
       FROM unnest(${DATAFORSEO_AUTOMATION_ENDPOINTS}::text[]) AS endpoint
     `;
     const counts = await updateBatchTotals(tx, batch.id);
-    return { ok: true, batchId: batch.id, siteId, domain: site.domain, ...counts };
+    return { ok: true, batchId: batch.id, siteId, domain: site.domain, source, ...counts };
   });
 }
 
@@ -218,7 +245,7 @@ async function claimJobs(limit) {
   `;
   const jobs = await sql.begin(async (tx) => {
     const rows = await tx`
-      SELECT j.*, b.trigger
+      SELECT j.*, b.trigger, b.source, b.schedule_key
       FROM dataforseo_automation_jobs j
       JOIN dataforseo_automation_batches b ON b.id = j.batch_id
       WHERE j.status = 'pending' AND j.next_attempt_at <= now()
@@ -253,7 +280,11 @@ async function invalidateCompletedSiteCache(sql, job) {
   if (Number(remaining?.count || 0) === 0) {
     await sql`
       DELETE FROM dashboard_api_cache
-      WHERE site_id = ${job.site_id}::uuid AND module_key = 'llm_mentions_overview'
+      WHERE site_id = ${job.site_id}::uuid
+        AND module_key = ANY(${[
+          'llm_mentions_overview', 'overview', 'gold', 'stats', 'csuite',
+          'monthly_insights', 'export_data',
+        ]}::text[])
     `;
   }
 }
@@ -277,6 +308,8 @@ async function executeJob(job) {
         siteId: job.site_id,
         endpoint: job.endpoint,
         trigger: job.trigger,
+        source: job.source,
+        scheduleKey: job.schedule_key,
       }),
       signal: controller.signal,
     });

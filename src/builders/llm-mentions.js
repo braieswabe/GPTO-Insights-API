@@ -344,7 +344,7 @@ export async function buildLlmMentionsOverview({
   days = 7,
   windowStart,
   windowEnd,
-  sources = ['chat_gpt', 'google_ai_overviews'],
+  sources = ['chat_gpt', 'google_ai_overviews', 'gemini', 'claude'],
   internalInputs: internalInputsOverride = null,
 }) {
   const sql = db();
