@@ -55,6 +55,7 @@ import {
   retryFailedDataForSeoBatch,
   runDataForSeoAutomationWorker,
 } from './services/dataforseo-automation.js';
+import { readAutomationRuns } from './services/automation-runs.js';
 
 function requireAuthOrThrow(request) {
   const auth = requireInternalAuth(request);
@@ -109,6 +110,7 @@ export async function route(request) {
   if (method === 'POST' && url.pathname === '/v1/dashboard/ai-report') return readDashboardAiReport(request, await readJson(request));
   if (method === 'GET' && url.pathname === '/v1/dashboard/export-data') return readDashboardExportData(request);
   if (method === 'GET' && url.pathname === '/v1/dashboard/export') return readDashboardExport(request);
+  if (method === 'GET' && url.pathname === '/v1/admin/automation-runs') return readAutomationRuns(request);
 
   if (method === 'GET' && url.pathname === '/v1/competitors/scorecards') return readCompetitorScorecards(request);
   if (method === 'GET' && url.pathname === '/v1/competitors/trends') return readCompetitorTrends(request);

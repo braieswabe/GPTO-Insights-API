@@ -18,6 +18,8 @@ export const REQUIRED_TABLES = [
   'competitor_score_snapshots',
   'dataforseo_automation_batches',
   'dataforseo_automation_jobs',
+  'ai_mentions_scan_runs',
+  'dashboard_data_refresh_runs',
 ];
 
 export async function readExistingTables(tableNames = REQUIRED_TABLES) {

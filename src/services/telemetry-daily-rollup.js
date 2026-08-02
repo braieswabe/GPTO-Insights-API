@@ -11,6 +11,7 @@ import {
 const DEFAULT_MAX_SPAN_DAYS = 366;
 const DEFAULT_MAX_SITES = 80;
 const DEFAULT_MAX_RUNS = 500;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function safeRecord(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -53,8 +54,9 @@ function incrementMap(map, key, amount = 1) {
  * @param {import('postgres').Sql} sql
  * @param {number} maxSites
  * @param {string | null} singleSiteId
+ * @param {string | null} siteCursor
  */
-async function listRollupSiteIds(sql, maxSites, singleSiteId) {
+async function listRollupSiteIds(sql, maxSites, singleSiteId, siteCursor = null) {
   if (singleSiteId) {
     const [row] = await sql`
       SELECT id FROM sites WHERE id = ${singleSiteId}::uuid LIMIT 1
@@ -64,7 +66,8 @@ async function listRollupSiteIds(sql, maxSites, singleSiteId) {
   const rows = await sql`
     SELECT id FROM sites
     WHERE status = 'active'
-    ORDER BY domain ASC
+      AND (${siteCursor}::uuid IS NULL OR id > ${siteCursor}::uuid)
+    ORDER BY id ASC
     LIMIT ${maxSites}
   `;
   return rows.map((r) => String(r.id));
@@ -263,6 +266,7 @@ export async function rollupSiteDayCommitted(siteId, dayIso, opts = {}) {
 /**
  * @param {{
  *   siteId?: string | null,
+ *   siteCursor?: string | null,
  *   from: string,
  *   to: string,
  *   force?: boolean,
@@ -283,7 +287,7 @@ export async function rollupTelemetryDaily(input) {
 
   const days = assertUtcRangeWithin(input.from, input.to, maxSpan);
   const sql = db();
-  const siteIds = await listRollupSiteIds(sql, maxSites, input.siteId || null);
+  const siteIds = await listRollupSiteIds(sql, maxSites, input.siteId || null, input.siteCursor || null);
 
   const results = [];
   let runs = 0;
@@ -316,6 +320,8 @@ export async function rollupTelemetryDaily(input) {
     from: input.from,
     to: input.to,
     siteId: input.siteId || null,
+    siteCursor: input.siteCursor || null,
+    nextSiteCursor: !input.siteId && siteIds.length >= maxSites ? siteIds.at(-1) || null : null,
     days: days.length,
     sites: siteIds.length,
     runs,
@@ -358,12 +364,18 @@ export async function postTelemetryDailyRollup(_request, body) {
     return { status: 400, body: { error: 'from and to are required (UTC YYYY-MM-DD)' } };
   }
   const siteId = typeof body?.siteId === 'string' ? body.siteId : null;
+  const siteCursor = !siteId && typeof body?.siteCursor === 'string' && body.siteCursor.trim()
+    ? body.siteCursor.trim()
+    : null;
   const force = body?.force === true;
   const maxSites = body?.maxSites != null ? Number(body.maxSites) : undefined;
   const maxRuns = body?.maxRuns != null ? Number(body.maxRuns) : undefined;
+  if (siteCursor && !UUID_RE.test(siteCursor)) {
+    return { status: 400, body: { error: 'Invalid siteCursor' } };
+  }
 
   try {
-    const payload = await rollupTelemetryDaily({ from, to, siteId, force, maxSites, maxRuns });
+    const payload = await rollupTelemetryDaily({ from, to, siteId, siteCursor, force, maxSites, maxRuns });
     return ok(payload);
   } catch (error) {
     const status = error.statusCode && Number.isFinite(error.statusCode) ? error.statusCode : 400;

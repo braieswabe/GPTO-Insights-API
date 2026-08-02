@@ -53,6 +53,7 @@ The server starts at `http://127.0.0.1:4011`.
 - `GET /v1/dashboard/gold` – client-facing Gold dashboard payload
 - `GET /v1/dashboard/stats` – dashboard stats payload
 - `GET /v1/dashboard/export-data` – consolidated export/report source data
+- `GET /v1/admin/automation-runs` – admin-only Refresh Data, DataForSEO, and AI Scanner run history (`days`, `limit`)
 - `GET /v1/llm-mentions/overview` – LLM mentions aggregation
 - `GET /v1/llm-mentions/bundle` – page-ready LLM Mentions bundle
 - `GET /v1/llm-mentions` – legacy GPTO-compatible LLM summary payload
@@ -75,7 +76,7 @@ The server starts at `http://127.0.0.1:4011`.
 - `POST /internal/refresh/llm-mentions` – force-refresh LLM data
 - `POST /internal/refresh/prewarm` – precompute common dashboard cache payloads
 - `POST /internal/refresh/process` – claim and process queued jobs
-- `POST /internal/rollup/telemetry-daily` – materialize `dashboard_rollups_daily` from `telemetry_events` (UTC `from` / `to` as `YYYY-MM-DD`; optional `siteId`, `force`, `maxSites`, `maxRuns`)
+- `POST /internal/rollup/telemetry-daily` – materialize `dashboard_rollups_daily` from `telemetry_events` (UTC `from` / `to` as `YYYY-MM-DD`; optional `siteId`, `siteCursor`, `force`, `maxSites`, `maxRuns`; returns `nextSiteCursor`)
 - `GET /internal/rollup/telemetry-daily/progress` – per-day rollup status for a site (`siteId`, `from`, `end` or `to` query params, UTC dates)
 
 ### Auth
