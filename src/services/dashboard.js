@@ -15,7 +15,15 @@ import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
 import { buildCsuite, buildMonthlyInsights } from '../builders/csuite.js';
 import { buildSiteConfig } from '../builders/sites.js';
 import { readLegacyLlmMentions, readLlmCompetitors, readSourceGap } from './llm-mentions.js';
-import { DASHBOARD_MODULES, EMPTY_SITE_UUID, normalizeDashboardModuleKey, normalizePortal, rangeToDays, ttlForModule } from '../types.js';
+import {
+  DASHBOARD_MODULES,
+  DASHBOARD_REFRESH_MODULES,
+  EMPTY_SITE_UUID,
+  normalizeDashboardModuleKey,
+  normalizePortal,
+  rangeToDays,
+  ttlForModule,
+} from '../types.js';
 import {
   boundsDaySpan,
   boundsFromInput,
@@ -703,7 +711,7 @@ export async function refreshDashboard(request, body) {
     : DASHBOARD_MODULES;
 
   const selectedModules = Array.from(new Set(modules));
-  const unsupported = selectedModules.filter((moduleKey) => !DASHBOARD_MODULES.includes(moduleKey));
+  const unsupported = selectedModules.filter((moduleKey) => !DASHBOARD_REFRESH_MODULES.includes(moduleKey));
   if (unsupported.length) {
     const error = new Error(`Unsupported dashboard modules: ${unsupported.join(', ')}`);
     error.statusCode = 400;
@@ -761,7 +769,7 @@ export async function processRefreshJobs(body = {}) {
     for (const job of jobs) {
       try {
         const moduleKey = normalizeDashboardModuleKey(job.module_key);
-        if (!DASHBOARD_MODULES.includes(moduleKey)) {
+        if (!DASHBOARD_REFRESH_MODULES.includes(moduleKey)) {
           const error = new Error(`Unsupported dashboard module: ${job.module_key}`);
           error.statusCode = 400;
           throw error;

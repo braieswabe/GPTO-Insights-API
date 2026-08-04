@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { DASHBOARD_MODULES, MODEL_VERSION, ttlForModule, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays } from '../src/types.js';
+import { DASHBOARD_MODULES, DASHBOARD_REFRESH_MODULES, MODEL_VERSION, ttlForModule, normalizeDashboardModuleKey, normalizePortal, normalizeRange, rangeToDays } from '../src/types.js';
 
 describe('types constants', () => {
   it('has all expected modules', () => {
@@ -18,6 +18,9 @@ describe('types constants', () => {
     assert.ok(DASHBOARD_MODULES.includes('llm_mentions_overview'));
     assert.ok(DASHBOARD_MODULES.includes('overview'));
     assert.equal(DASHBOARD_MODULES.length, 13);
+    assert.ok(DASHBOARD_REFRESH_MODULES.includes('stats'));
+    assert.ok(DASHBOARD_REFRESH_MODULES.includes('gold'));
+    assert.ok(DASHBOARD_REFRESH_MODULES.includes('csuite'));
   });
 
   it('ttlForModule returns correct TTLs', () => {

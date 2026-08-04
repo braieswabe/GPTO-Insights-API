@@ -17,6 +17,15 @@ export const DASHBOARD_MODULES = [
   'llm_mentions_overview',
 ];
 
+export const DASHBOARD_REFRESH_MODULES = [
+  ...DASHBOARD_MODULES,
+  'gold',
+  'stats',
+  'export_data',
+  'csuite',
+  'monthly_insights',
+];
+
 export const MODULE_TTL_SECONDS = {
   overview: 60 * 60,
   telemetry: 15 * 60,
