@@ -370,7 +370,9 @@ export function composeDashboardOverviewFromModulePayloads(sitesList, payloads) 
 }
 
 async function buildDashboardOverviewFromCachedModules(context) {
-  const moduleKeys = DASHBOARD_MODULES.filter((moduleKey) => moduleKey !== 'overview');
+  const moduleKeys = DASHBOARD_MODULES.filter((moduleKey) =>
+    moduleKey !== 'overview' && (context.siteId || moduleKey !== 'llm_mentions_overview')
+  );
   const rows = await Promise.all(moduleKeys.map((moduleKey) => getCacheRow(cacheIdentity({
     ...context,
     moduleKey,
@@ -746,7 +748,7 @@ export async function refreshDashboard(request, body) {
     ? body.modules.map(normalizeDashboardModuleKey)
     : DASHBOARD_MODULES;
 
-  const selectedModules = Array.from(new Set(modules));
+  const selectedModules = refreshableModulesForSite(modules, siteId);
   const unsupported = selectedModules.filter((moduleKey) => !DASHBOARD_REFRESH_MODULES.includes(moduleKey));
   if (unsupported.length) {
     const error = new Error(`Unsupported dashboard modules: ${unsupported.join(', ')}`);
@@ -777,6 +779,12 @@ export async function refreshDashboard(request, body) {
     status: 202,
     body: { ok: true, queued: true, siteId, portalScope, range: bounds.rangeKey, jobs: results },
   };
+}
+
+export function refreshableModulesForSite(modules, siteId) {
+  return Array.from(new Set(modules)).filter((moduleKey) =>
+    siteId || moduleKey !== 'llm_mentions_overview'
+  );
 }
 
 export async function processRefreshJobs(body = {}) {

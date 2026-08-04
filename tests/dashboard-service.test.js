@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildDashboardPrewarmTargets,
   composeDashboardOverviewFromModulePayloads,
+  refreshableModulesForSite,
   shouldQueueDashboardRefresh,
   shouldServeCachedDashboardRow,
 } from '../src/services/dashboard.js';
@@ -31,6 +32,17 @@ describe('dashboard overview cache composition', () => {
     assert.equal(overview.display.telemetry.pageViews, 12);
     assert.equal(overview.display.aiVisibility.composite, 66);
     assert.deepEqual(overview.dashboardIndex, [{ id: 'dash-1' }]);
+  });
+
+  it('does not enqueue the site-required LLM module for an all-sites overview', () => {
+    assert.deepEqual(
+      refreshableModulesForSite(['overview', 'telemetry', 'llm_mentions_overview'], null),
+      ['overview', 'telemetry']
+    );
+    assert.deepEqual(
+      refreshableModulesForSite(['overview', 'telemetry', 'llm_mentions_overview'], 'site-1'),
+      ['overview', 'telemetry', 'llm_mentions_overview']
+    );
   });
 });
 
