@@ -50,7 +50,7 @@ export async function assertSiteAccess({ siteId, portalScope, user }) {
   const role = user?.role || 'employee';
 
   if (!normalizedSiteId) {
-    if (portalScope === 'customer' || role === 'client') {
+    if (role === 'client' || (portalScope === 'customer' && !['admin', 'operator'].includes(role))) {
       const error = new Error('siteId is required for customer scoped reads');
       error.statusCode = 400;
       throw error;

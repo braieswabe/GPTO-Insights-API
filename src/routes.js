@@ -15,6 +15,7 @@ import {
   readDashboardOverview,
   readDashboardReportBundle,
   readDashboardStats,
+  readRefreshJobStatuses,
   refreshDashboard,
   runDashboardCronRefresh,
 } from './services/dashboard.js';
@@ -91,9 +92,10 @@ export async function route(request) {
   }
 
   if (url.pathname.startsWith('/internal/') || url.pathname.startsWith('/v1/')) {
-    const isDataForSeoCron = url.pathname === '/internal/cron/dataforseo-enqueue'
-      || url.pathname === '/internal/cron/dataforseo-worker';
-    if (isDataForSeoCron) requireCronOrInternalAuth(request);
+    const isWorkerCron = url.pathname === '/internal/cron/dataforseo-enqueue'
+      || url.pathname === '/internal/cron/dataforseo-worker'
+      || url.pathname === '/internal/cron/dashboard-refresh-worker';
+    if (isWorkerCron) requireCronOrInternalAuth(request);
     else requireAuthOrThrow(request);
   }
 
@@ -142,6 +144,7 @@ export async function route(request) {
   if (method === 'GET' && url.pathname === '/v1/auth/me') return { status: 200, body: { user: getUserContext(request) } };
 
   if (method === 'POST' && url.pathname === '/internal/refresh/dashboard') return refreshDashboard(request, await readJson(request));
+  if (method === 'POST' && url.pathname === '/internal/refresh/dashboard/status') return readRefreshJobStatuses(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/llm-mentions') return refreshLlmMentions(request, await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/prewarm') return prewarmDashboard(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/refresh/process') return processRefreshJobs(await readJson(request));
@@ -161,6 +164,9 @@ export async function route(request) {
   }
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/dataforseo-worker') {
     return { status: 200, body: await runDataForSeoAutomationWorker() };
+  }
+  if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/dashboard-refresh-worker') {
+    return processRefreshJobs({ limit: Number(process.env.DASHBOARD_REFRESH_WORKER_BATCH_SIZE || 3) });
   }
   if (method === 'POST' && url.pathname === '/internal/materialize/site-scores') return materializeSiteScores(await readJson(request));
   if (method === 'POST' && url.pathname === '/internal/materialize/competitor-scores') return materializeCompetitorScores(await readJson(request));

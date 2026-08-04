@@ -4,6 +4,8 @@ import {
   DATAFORSEO_AUTOMATION_ENDPOINTS,
   DATAFORSEO_AUTOMATION_SOURCES,
   dataForSeoAutomationEnabled,
+  dataForSeoDeferralNextAttempt,
+  isDataForSeoDeferral,
   manilaScheduleKey,
   normalizeManualDataForSeoSource,
 } from '../src/services/dataforseo-automation.js';
@@ -46,5 +48,20 @@ describe('DataForSEO automation configuration', () => {
     assert.equal(normalizeManualDataForSeoSource('chat_gpt'), 'chat_gpt');
     assert.equal(normalizeManualDataForSeoSource('google_ai_overviews'), 'google_ai_overviews');
     assert.throws(() => normalizeManualDataForSeoSource('gemini'), /source must be one of/);
+  });
+
+  it('classifies reservation and workload lease responses as non-consuming deferrals', () => {
+    const result = {
+      ok: false,
+      retryable: true,
+      code: 'dashboard_reserved_window',
+      retryAfterSeconds: 120,
+    };
+    assert.equal(isDataForSeoDeferral(result), true);
+    assert.equal(
+      dataForSeoDeferralNextAttempt(result, Date.parse('2026-08-03T10:00:00Z'), 0).toISOString(),
+      '2026-08-03T10:02:00.000Z'
+    );
+    assert.equal(isDataForSeoDeferral({ ...result, code: 'vendor_authentication_failed' }), false);
   });
 });

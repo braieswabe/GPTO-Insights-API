@@ -11,6 +11,7 @@ export const DATAFORSEO_AUTOMATION_ENDPOINTS = [
 export const DATAFORSEO_AUTOMATION_SOURCES = ['chat_gpt', 'google_ai_overviews'];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DATAFORSEO_DEFERRAL_CODES = new Set(['dashboard_reserved_window', 'heavy_workload_lease_held']);
 
 export function dataForSeoAutomationEnabled() {
   return ['1', 'true', 'yes'].includes(String(process.env.DATAFORSEO_AUTOMATION_ENABLED || '').toLowerCase());
@@ -52,6 +53,23 @@ export function normalizeManualDataForSeoSource(value) {
     throw error;
   }
   return value;
+}
+
+export function isDataForSeoDeferral(result) {
+  return Boolean(
+    result?.ok === false
+    && result.retryable === true
+    && DATAFORSEO_DEFERRAL_CODES.has(result.code)
+  );
+}
+
+export function dataForSeoDeferralNextAttempt(result, nowMs = Date.now(), jitterSeconds = Math.floor(Math.random() * 31)) {
+  const retryAfterAtMs = Date.parse(String(result?.retryAfterAt || ''));
+  const retryAfterSeconds = Math.max(1, Number(result?.retryAfterSeconds || 60));
+  const baseMs = Number.isFinite(retryAfterAtMs) && retryAfterAtMs > nowMs
+    ? retryAfterAtMs
+    : nowMs + retryAfterSeconds * 1000;
+  return new Date(baseMs + Math.max(0, Number(jitterSeconds || 0)) * 1000);
 }
 
 async function updateBatchTotals(sql, batchId) {
@@ -320,6 +338,10 @@ async function executeJob(job) {
         retryable: body.retryable === true || response.status === 429 || response.status >= 500,
         error: body.message || body.error || `GPTO executor HTTP ${response.status}`,
         snapshotId: body.snapshotId || null,
+        code: body.code || null,
+        retryAfterSeconds: Number(body.retryAfterSeconds || response.headers.get('retry-after') || 0) || null,
+        retryAfterAt: body.retryAfterAt || null,
+        httpStatus: response.status,
       };
     }
     return { ok: true, body };
@@ -347,6 +369,16 @@ async function finishJob(job, result) {
       WHERE id = ${job.id}::uuid
     `;
     await invalidateCompletedSiteCache(sql, job);
+  } else if (isDataForSeoDeferral(result)) {
+    const nextAttemptAt = dataForSeoDeferralNextAttempt(result);
+    await sql`
+      UPDATE dataforseo_automation_jobs
+      SET status = 'pending', attempts = GREATEST(attempts - 1, 0),
+          next_attempt_at = ${nextAttemptAt}, snapshot_id = COALESCE(${result.snapshotId || null}::uuid, snapshot_id),
+          error = ${String(result.error).slice(0, 2000)}, locked_by = NULL, locked_at = NULL,
+          finished_at = NULL, updated_at = now()
+      WHERE id = ${job.id}::uuid
+    `;
   } else if (result.retryable && job.attempts < maxAttempts) {
     const delays = [60, 300, 1200];
     const delaySeconds = delays[Math.min(job.attempts - 1, delays.length - 1)];
@@ -367,7 +399,13 @@ async function finishJob(job, result) {
     `;
   }
   await updateBatchTotals(sql, job.batch_id);
-  return { jobId: job.id, endpoint: job.endpoint, siteId: job.site_id, ...result };
+  return {
+    jobId: job.id,
+    endpoint: job.endpoint,
+    siteId: job.site_id,
+    deferred: isDataForSeoDeferral(result),
+    ...result,
+  };
 }
 
 export async function runDataForSeoAutomationWorker() {

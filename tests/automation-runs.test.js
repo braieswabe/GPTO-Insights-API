@@ -36,6 +36,15 @@ describe('automation run history', () => {
           updated_at: new Date('2026-08-02T10:04:00Z'),
         }];
       }
+      if (query.includes('FROM automation_cron_attempts')) {
+        return [{
+          id: 'enqueue-1', system: 'ai_scanner_enqueue', schedule_key: '2026-08-02',
+          status: 'failed', failure_code: 'automation_disabled', inserted_runs: 0,
+          total_runs: 3, error: 'AI mentions automation is disabled',
+          created_at: new Date('2026-08-02T08:30:00Z'), started_at: new Date('2026-08-02T08:30:00Z'),
+          finished_at: new Date('2026-08-02T08:30:01Z'), updated_at: new Date('2026-08-02T08:30:01Z'),
+        }];
+      }
       return [{
         id: 'scan-1', site_id: 'site-1', domain: 'crst.com', status: 'completed',
         scanner_version: 'v2', platforms: ['gemini', 'claude'], prompt_count: 8,
@@ -52,10 +61,13 @@ describe('automation run history', () => {
       'dashboard_refresh',
       'dataforseo',
       'ai_scanner',
+      'ai_scanner',
     ]);
-    assert.equal(result.body.data.runs[1].outcome, 'failed');
+    assert.equal(result.body.data.runs[1].outcome, 'partial');
     assert.equal(result.body.data.runs[1].error, 'vendor timeout');
     assert.equal(result.body.data.runs[2].siteDomain, 'crst.com');
+    assert.equal(result.body.data.runs[3].enqueueStatus, 'automation_disabled');
+    assert.equal(result.body.data.runs[3].failureCode, 'automation_disabled');
   });
 
   it('rejects non-admin users', async () => {

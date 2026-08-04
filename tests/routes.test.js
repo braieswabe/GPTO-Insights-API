@@ -5,6 +5,8 @@ import { setDashboardReportBundleReaderForTests } from '../src/services/dashboar
 import { composeReportPayload } from '../src/pdf/compose.js';
 import { technicalAppendixData } from '../src/pdf/render.js';
 
+process.env.INTERNAL_API_TOKEN ||= 'test-token';
+
 function makeRequest(method, pathname, options = {}) {
   const url = new URL(pathname, 'http://localhost:4011');
   if (options.searchParams) {

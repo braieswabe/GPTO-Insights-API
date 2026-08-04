@@ -20,6 +20,7 @@ export const REQUIRED_TABLES = [
   'dataforseo_automation_jobs',
   'ai_mentions_scan_runs',
   'dashboard_data_refresh_runs',
+  'automation_cron_attempts',
 ];
 
 export async function readExistingTables(tableNames = REQUIRED_TABLES) {

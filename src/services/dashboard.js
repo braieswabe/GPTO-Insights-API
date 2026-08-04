@@ -1,7 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import { assertSiteAccess, getUserContext } from '../access.js';
 import { buildCacheIdentity, getCacheRow, isCacheStale, serializeCacheRow, upsertCacheRow } from '../cache.js';
 import { db } from '../db.js';
-import { claimRefreshJobs, completeRefreshJob, enqueueRefreshJob } from '../jobs.js';
+import {
+  claimRefreshJobs,
+  completeRefreshJob,
+  enqueueRefreshJob,
+  getRefreshJobStatuses,
+  retryableDashboardRefreshError,
+} from '../jobs.js';
 import { DEFAULT_LLM_MENTION_SOURCES, computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
 import { buildDashboardOverview, buildModule, buildLlmMentionsOverview } from '../builders/index.js';
 import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
@@ -691,89 +698,157 @@ export async function refreshDashboard(request, body) {
   const user = getUserContext(request);
   await assertSiteAccess({ siteId, portalScope, user });
 
-  const buildCtx = {
-    siteId,
-    portalScope,
-    rangeKey: bounds.rangeKey,
-    windowStart: bounds.start,
-    windowEnd: bounds.end,
-    seriesGranularity,
-    params,
-    user,
-  };
-
   const modules = Array.isArray(body.modules) && body.modules.length > 0
     ? body.modules.map(normalizeDashboardModuleKey)
-    : [
-        'telemetry',
-        'authority',
-        'executive_summary',
-        'experience',
-        'search_diagnostics',
-        'confusion',
-        'coverage',
-        'journey',
-        'schema',
-        'ai_readability',
-      ];
+    : DASHBOARD_MODULES;
 
-  const results = [];
-  for (const moduleKey of modules.filter((key) => DASHBOARD_MODULES.includes(key) && key !== 'overview')) {
-    const identity = cacheIdentity({ portalScope, moduleKey, siteId, rangeKey: bounds.rangeKey, params });
-    const payload = await buildModule(moduleKey, buildCtx);
-    await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
-    results.push({ moduleKey, ok: true });
+  const selectedModules = Array.from(new Set(modules));
+  const unsupported = selectedModules.filter((moduleKey) => !DASHBOARD_MODULES.includes(moduleKey));
+  if (unsupported.length) {
+    const error = new Error(`Unsupported dashboard modules: ${unsupported.join(', ')}`);
+    error.statusCode = 400;
+    throw error;
   }
 
-  const overviewIdentity = cacheIdentity({ portalScope, moduleKey: 'overview', siteId, rangeKey: bounds.rangeKey, params });
-  const overview = await buildDashboardOverview(buildCtx);
-  await upsertCacheRow(overviewIdentity, overview, { ttlSeconds: ttlForModule('overview') });
-  results.push({ moduleKey: 'overview', ok: true });
+  const results = [];
+  for (const moduleKey of selectedModules) {
+    const identity = cacheIdentity({ portalScope, moduleKey, siteId, rangeKey: bounds.rangeKey, params });
+    const queued = await enqueueRefreshJob(identity, {
+      requestedBy: user.userId,
+      priority: moduleKey === 'overview' ? 200 : 100,
+      cooldownSeconds: 0,
+    });
+    results.push({
+      id: queued.jobId,
+      moduleKey,
+      rangeKey: bounds.rangeKey,
+      portalScope,
+      queued: queued.queued,
+      deduplicated: queued.reason === 'active_job_exists',
+      reason: queued.reason,
+    });
+  }
 
-  return ok({ ok: true, siteId, portalScope, range: bounds.rangeKey, results });
+  return {
+    status: 202,
+    body: { ok: true, queued: true, siteId, portalScope, range: bounds.rangeKey, jobs: results },
+  };
 }
 
 export async function processRefreshJobs(body = {}) {
   const limit = Math.max(1, Math.min(Number(body.limit || 5), 10));
-  const jobs = await claimRefreshJobs(limit);
-  const results = [];
-
-  for (const job of jobs) {
-    try {
-      const moduleKey = normalizeDashboardModuleKey(job.module_key);
-      const siteId = job.site_id === EMPTY_SITE_UUID ? null : job.site_id;
-      const identity = {
-        portalScope: job.portal_scope,
-        moduleKey,
-        siteId,
-        rangeKey: job.range_key,
-        params: job.params || {},
-        paramsHash: job.params_hash,
-        modelVersion: job.model_version,
-      };
-      const jobParams = job.params || {};
-      const bounds = resolveDashboardTimeBounds(job.range_key, jobParams.start || null, jobParams.end || null);
-      const seriesGranularity = parseSeriesGranularity(jobParams.seriesGranularity);
-      const payload = await buildDashboardCachePayload(moduleKey, {
-        siteId,
-        rangeKey: bounds.rangeKey,
-        portalScope: job.portal_scope,
-        windowStart: bounds.start,
-        windowEnd: bounds.end,
-        seriesGranularity,
-        params: jobParams,
-      });
-
-      await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
-      await completeRefreshJob(job.id, { ok: true });
-      results.push({ jobId: job.id, moduleKey: job.module_key, ok: true });
-    } catch (error) {
-      await completeRefreshJob(job.id, { ok: false, error: error instanceof Error ? error.message : String(error) });
-      results.push({ jobId: job.id, moduleKey: job.module_key, ok: false, error: error instanceof Error ? error.message : String(error) });
-    }
+  const owner = `dashboard-refresh:${randomUUID()}`;
+  const sql = db();
+  const lease = await sql`
+    INSERT INTO automation_workload_leases
+      (name, owner, workload_type, acquired_at, expires_at, updated_at)
+    VALUES ('dashboard-heavy-refresh', ${owner}, 'dashboard_refresh', now(), now() + interval '6 minutes', now())
+    ON CONFLICT (name) DO UPDATE
+    SET owner = EXCLUDED.owner, workload_type = EXCLUDED.workload_type,
+        acquired_at = now(), expires_at = EXCLUDED.expires_at, updated_at = now()
+    WHERE automation_workload_leases.expires_at < now()
+       OR automation_workload_leases.owner = EXCLUDED.owner
+    RETURNING name
+  `;
+  if (!lease.length) {
+    return ok({ ok: true, claimed: 0, succeeded: 0, retried: 0, failed: 0, skipped: 'heavy_workload_lease_held' });
   }
 
-  return ok({ ok: true, claimed: jobs.length, results });
+  try {
+    const jobs = await claimRefreshJobs(limit);
+    const results = [];
+
+    for (const job of jobs) {
+      try {
+        const moduleKey = normalizeDashboardModuleKey(job.module_key);
+        if (!DASHBOARD_MODULES.includes(moduleKey)) {
+          const error = new Error(`Unsupported dashboard module: ${job.module_key}`);
+          error.statusCode = 400;
+          throw error;
+        }
+        const siteId = job.site_id === EMPTY_SITE_UUID ? null : job.site_id;
+        const identity = {
+          portalScope: job.portal_scope,
+          moduleKey,
+          siteId,
+          rangeKey: job.range_key,
+          params: job.params || {},
+          paramsHash: job.params_hash,
+          modelVersion: job.model_version,
+        };
+        const jobParams = job.params || {};
+        const bounds = resolveDashboardTimeBounds(job.range_key, jobParams.start || null, jobParams.end || null);
+        const seriesGranularity = parseSeriesGranularity(jobParams.seriesGranularity);
+        const payload = await buildDashboardCachePayload(moduleKey, {
+          siteId,
+          rangeKey: bounds.rangeKey,
+          portalScope: job.portal_scope,
+          windowStart: bounds.start,
+          windowEnd: bounds.end,
+          seriesGranularity,
+          params: jobParams,
+        });
+
+        await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
+        await completeRefreshJob(job, { ok: true });
+        results.push({ jobId: job.id, moduleKey: job.module_key, status: 'succeeded', ok: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const status = await completeRefreshJob(job, {
+          ok: false,
+          retryable: retryableDashboardRefreshError(error),
+          error: message,
+        });
+        results.push({ jobId: job.id, moduleKey: job.module_key, status, ok: false, error: message });
+      }
+    }
+
+    return ok({
+      ok: true,
+      claimed: jobs.length,
+      succeeded: results.filter((result) => result.status === 'succeeded').length,
+      retried: results.filter((result) => result.status === 'pending').length,
+      failed: results.filter((result) => result.status === 'failed').length,
+      results,
+    });
+  } finally {
+    await sql`
+      DELETE FROM automation_workload_leases
+      WHERE name = 'dashboard-heavy-refresh' AND owner = ${owner}
+    `;
+  }
+}
+
+export async function readRefreshJobStatuses(body = {}) {
+  const jobIds = Array.isArray(body.jobIds)
+    ? body.jobIds.filter((id) => typeof id === 'string' && id.length > 0).slice(0, 500)
+    : [];
+  if (!jobIds.length) return { status: 400, body: { error: 'jobIds is required' } };
+  const jobs = await getRefreshJobStatuses(jobIds);
+  const totals = {
+    total: jobIds.length,
+    pending: jobs.filter((job) => job.status === 'pending').length,
+    running: jobs.filter((job) => job.status === 'running').length,
+    succeeded: jobs.filter((job) => job.status === 'succeeded').length,
+    failed: jobs.filter((job) => job.status === 'failed').length,
+    missing: Math.max(0, jobIds.length - jobs.length),
+  };
+  return ok({
+    ok: true,
+    terminal: totals.succeeded + totals.failed + totals.missing === totals.total,
+    totals,
+    jobs: jobs.map((job) => ({
+      id: job.id,
+      status: job.status,
+      portalScope: job.portal_scope,
+      moduleKey: job.module_key,
+      rangeKey: job.range_key,
+      attempts: Number(job.attempts || 0),
+      error: job.error || null,
+      updatedAt: job.updated_at,
+      finishedAt: job.finished_at,
+    })),
+  });
 }
 
 export async function runDashboardCronRefresh(body = {}) {

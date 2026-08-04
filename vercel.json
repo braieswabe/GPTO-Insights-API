@@ -26,6 +26,9 @@
     },
     "api/internal/cron/dataforseo-worker.js": {
       "maxDuration": 300
+    },
+    "api/internal/cron/dashboard-refresh-worker.js": {
+      "maxDuration": 300
     }
   },
   "crons": [
@@ -39,10 +42,14 @@
     },
     {
       "path": "/internal/cron/dataforseo-enqueue",
-      "schedule": "0 16 * * *"
+      "schedule": "20 20 * * *"
     },
     {
       "path": "/internal/cron/dataforseo-worker",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/internal/cron/dashboard-refresh-worker",
       "schedule": "* * * * *"
     }
   ]

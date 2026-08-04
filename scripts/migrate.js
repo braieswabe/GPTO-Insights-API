@@ -25,6 +25,10 @@ async function run() {
     '0003_sites_last_telemetry_at.sql',
     '0004_site_score_snapshots.sql',
     '0005_competitor_score_snapshots.sql',
+    '0006_dataforseo_automation.sql',
+    '0007_native_ai_mentions_automation.sql',
+    '0008_dashboard_hourly_refresh.sql',
+    '0009_automation_reliability.sql',
   ];
   for (const name of migrations) {
     const migrationPath = resolve(process.cwd(), 'migrations', name);

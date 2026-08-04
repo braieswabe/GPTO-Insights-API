@@ -17,6 +17,17 @@ describe('access control UUID validation', () => {
     assert.equal(isUuid('codex-smoke'), false);
   });
 
+  it('allows internal administrators to enqueue an all-sites customer refresh', async () => {
+    setAccessDbReaderForTests(() => {
+      assert.fail('database should not be queried for an all-sites admin refresh');
+    });
+    await assert.doesNotReject(() => assertSiteAccess({
+      siteId: null,
+      portalScope: 'customer',
+      user: { userId: null, role: 'admin', tenantId: null },
+    }));
+  });
+
   it('rejects malformed site ids before querying Postgres', async () => {
     setAccessDbReaderForTests(() => {
       assert.fail('database should not be queried for malformed siteId');
