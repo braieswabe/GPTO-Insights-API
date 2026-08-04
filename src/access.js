@@ -58,7 +58,11 @@ export async function assertSiteAccess({ siteId, portalScope, user }) {
     return;
   }
 
-  if (['admin', 'operator', 'employee', 'viewer'].includes(role) && portalScope !== 'customer') {
+  if (['admin', 'operator'].includes(role)) {
+    return;
+  }
+
+  if (['employee', 'viewer'].includes(role) && portalScope !== 'customer') {
     return;
   }
 

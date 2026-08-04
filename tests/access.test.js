@@ -28,6 +28,17 @@ describe('access control UUID validation', () => {
     }));
   });
 
+  it('allows internal administrators to refresh a specific customer site', async () => {
+    setAccessDbReaderForTests(() => {
+      assert.fail('database should not be queried for an internal administrator');
+    });
+    await assert.doesNotReject(() => assertSiteAccess({
+      siteId: SITE_ID,
+      portalScope: 'customer',
+      user: { userId: null, role: 'admin', tenantId: null },
+    }));
+  });
+
   it('rejects malformed site ids before querying Postgres', async () => {
     setAccessDbReaderForTests(() => {
       assert.fail('database should not be queried for malformed siteId');
