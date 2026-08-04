@@ -13,7 +13,7 @@ import { buildLlmMentionsOverview } from './llm-mentions.js';
 import { buildDashboardOverview } from './dashboard-overview.js';
 import { boundsDaySpan, boundsFromInput } from '../dashboard-range.js';
 
-export { buildDashboardOverview } from './dashboard-overview.js';
+export { buildDashboardOverview, composeDashboardOverview } from './dashboard-overview.js';
 export { buildLlmMentionsOverview, buildLlmMentionsTrends, buildLlmMentionsCompetitors, buildLlmMentionsPromptIntelligence, buildLlmMentionsSourceGap } from './llm-mentions.js';
 
 export async function buildModule(moduleKey, input) {

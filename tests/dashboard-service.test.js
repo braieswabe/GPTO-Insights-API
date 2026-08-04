@@ -2,9 +2,37 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildDashboardPrewarmTargets,
+  composeDashboardOverviewFromModulePayloads,
   shouldQueueDashboardRefresh,
   shouldServeCachedDashboardRow,
 } from '../src/services/dashboard.js';
+
+describe('dashboard overview cache composition', () => {
+  it('assembles an overview from completed module payloads without recomputing them', () => {
+    const overview = composeDashboardOverviewFromModulePayloads(
+      [{ id: 'site-1', domain: 'example.com' }],
+      {
+        telemetry: { totals: { pageViews: 12, visits: 4 } },
+        authority: { authorityScore: 77, band: 'strong' },
+        executive_summary: { focusLanes: { performingWell: { items: [] } }, signalChips: [] },
+        experience: { healthScore: 82 },
+        search_diagnostics: { searches: 3 },
+        confusion: { totals: { repeatedSearches: 1, deadEnds: 0, dropOffs: 0, intentMismatches: 0 } },
+        coverage: { totals: { priorityFixes: 2 } },
+        schema: { completenessScore: 90 },
+        journey: { rowCount: 5 },
+        index: { dashboards: [{ id: 'dash-1' }], llmAiVisibility: { score: 60 } },
+        ai_readability: { score: 81 },
+        llm_mentions_overview: { aiVisibility: { composite: 66 }, summary: { metrics: { mentions: 9 } } },
+      }
+    );
+
+    assert.equal(overview.sites, 1);
+    assert.equal(overview.display.telemetry.pageViews, 12);
+    assert.equal(overview.display.aiVisibility.composite, 66);
+    assert.deepEqual(overview.dashboardIndex, [{ id: 'dash-1' }]);
+  });
+});
 
 describe('dashboard cache read policy', () => {
   it('serves any existing cache row immediately', () => {

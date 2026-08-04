@@ -48,6 +48,39 @@ export async function buildDashboardOverview(input) {
       buildAiReadability(input).catch(() => null),
     ]);
 
+  return composeDashboardOverview({
+    sitesList,
+    telemetry,
+    authority,
+    executiveSummary,
+    experience,
+    searchDiagnostics,
+    confusion,
+    coverage,
+    schema,
+    journey,
+    indexData,
+    aiReadability,
+    llmMentions,
+  });
+}
+
+/** Compose the aggregate overview from already-built module payloads. */
+export function composeDashboardOverview({
+  sitesList = [],
+  telemetry = null,
+  authority = null,
+  executiveSummary = null,
+  experience = null,
+  searchDiagnostics = null,
+  confusion = null,
+  coverage = null,
+  schema = null,
+  journey = null,
+  indexData = null,
+  aiReadability = null,
+  llmMentions = null,
+}) {
   const display = buildDisplayLayer({
     telemetry,
     authority,

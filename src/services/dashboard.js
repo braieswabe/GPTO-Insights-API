@@ -10,7 +10,7 @@ import {
   retryableDashboardRefreshError,
 } from '../jobs.js';
 import { DEFAULT_LLM_MENTION_SOURCES, computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
-import { buildDashboardOverview, buildModule, buildLlmMentionsOverview } from '../builders/index.js';
+import { buildDashboardOverview, buildModule, buildLlmMentionsOverview, composeDashboardOverview } from '../builders/index.js';
 import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
 import { buildCsuite, buildMonthlyInsights } from '../builders/csuite.js';
 import { buildSiteConfig } from '../builders/sites.js';
@@ -39,6 +39,7 @@ import { materializeSiteScores } from './site-score-materialize.js';
 import { materializeCompetitorScores } from './competitor-score-materialize.js';
 import { composeReportPayload } from '../pdf/compose.js';
 import { renderDashboardReport } from '../pdf/render.js';
+import { loadSitesWithConnectionFields } from '../site-connection.js';
 
 const DASHBOARD_PREWARM_RANGES = ['7d', '30d'];
 const DASHBOARD_PREWARM_PORTALS = ['admin', 'employee'];
@@ -328,7 +329,7 @@ async function buildExportData(context) {
 
 async function buildDashboardCachePayload(moduleKey, context) {
   const normalized = normalizeDashboardModuleKey(moduleKey);
-  if (normalized === 'overview') return buildDashboardOverview(context);
+  if (normalized === 'overview') return buildDashboardOverviewFromCachedModules(context);
   if (normalized === 'gold') return buildGoldDashboard(context);
   if (normalized === 'stats') return buildDashboardStats(context);
   if (normalized === 'export_data') return buildExportData(context);
@@ -348,6 +349,41 @@ async function buildDashboardCachePayload(moduleKey, context) {
     });
   }
   return buildModule(normalized, context);
+}
+
+export function composeDashboardOverviewFromModulePayloads(sitesList, payloads) {
+  return composeDashboardOverview({
+    sitesList,
+    telemetry: payloads.telemetry,
+    authority: payloads.authority,
+    executiveSummary: payloads.executive_summary,
+    experience: payloads.experience,
+    searchDiagnostics: payloads.search_diagnostics,
+    confusion: payloads.confusion,
+    coverage: payloads.coverage,
+    schema: payloads.schema,
+    journey: payloads.journey,
+    indexData: payloads.index,
+    aiReadability: payloads.ai_readability,
+    llmMentions: payloads.llm_mentions_overview,
+  });
+}
+
+async function buildDashboardOverviewFromCachedModules(context) {
+  const moduleKeys = DASHBOARD_MODULES.filter((moduleKey) => moduleKey !== 'overview');
+  const rows = await Promise.all(moduleKeys.map((moduleKey) => getCacheRow(cacheIdentity({
+    ...context,
+    moduleKey,
+    params: context.params,
+  }))));
+
+  // Overview has the lowest queue priority, so its component jobs normally
+  // finish first. Fall back to the full builder for direct/legacy refreshes.
+  if (rows.some((row) => !row?.payload)) return buildDashboardOverview(context);
+
+  const payloads = Object.fromEntries(moduleKeys.map((moduleKey, index) => [moduleKey, rows[index].payload]));
+  const sitesList = await loadSitesWithConnectionFields(db(), context.siteId);
+  return composeDashboardOverviewFromModulePayloads(sitesList, payloads);
 }
 
 export function parseDashboardContext(request, { customerDefault = false } = {}) {
