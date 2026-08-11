@@ -24,6 +24,15 @@ export function refreshJobSiteIdValue(identity) {
   return identity.siteId || null;
 }
 
+export function dashboardRefreshPriority(moduleKey) {
+  // The worker claims lower numeric priorities first. Keep the composed
+  // frontend read model and its telemetry/Top Pages input ahead of the wider
+  // hourly prewarm fan-out so user-facing data cannot starve in the queue.
+  if (moduleKey === 'overview') return 10;
+  if (moduleKey === 'telemetry') return 20;
+  return 100;
+}
+
 export async function enqueueRefreshJob(identity, options = {}) {
   const sql = db();
   const cooldownSeconds = options.cooldownSeconds ?? refreshCooldownSeconds();
@@ -70,7 +79,7 @@ export async function enqueueRefreshJob(identity, options = {}) {
     VALUES (
       ${siteIdValue}::uuid, ${identity.portalScope}, ${identity.moduleKey},
       ${identity.rangeKey}, ${sql.json(identity.params || {})},
-      ${identity.paramsHash}, 'pending', ${options.priority ?? 100},
+      ${identity.paramsHash}, 'pending', ${options.priority ?? dashboardRefreshPriority(identity.moduleKey)},
       ${options.requestedBy || null}, ${MODEL_VERSION}, now()
     )
     ON CONFLICT DO NOTHING

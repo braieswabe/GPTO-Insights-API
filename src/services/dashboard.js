@@ -6,6 +6,7 @@ import {
   claimRefreshJobs,
   completeRefreshJob,
   DashboardRefreshJobTimeoutError,
+  dashboardRefreshPriority,
   dashboardRefreshWorkerBatchSize,
   enqueueRefreshJob,
   getRefreshJobStatuses,
@@ -382,8 +383,8 @@ async function buildDashboardOverviewFromCachedModules(context) {
     params: context.params,
   }))));
 
-  // Overview has the lowest queue priority, so its component jobs normally
-  // finish first. Fall back to the full builder for direct/legacy refreshes.
+  // Component jobs normally finish before overview because they are enqueued
+  // first. Fall back to the full builder for direct/legacy refreshes.
   if (rows.some((row) => !row?.payload)) return buildDashboardOverview(context);
 
   const payloads = Object.fromEntries(moduleKeys.map((moduleKey, index) => [moduleKey, rows[index].payload]));
@@ -764,7 +765,7 @@ export async function refreshDashboard(request, body) {
     const identity = cacheIdentity({ portalScope, moduleKey, siteId, rangeKey: bounds.rangeKey, params });
     const queued = await enqueueRefreshJob(identity, {
       requestedBy: user.userId,
-      priority: moduleKey === 'overview' ? 200 : 100,
+      priority: dashboardRefreshPriority(moduleKey),
       cooldownSeconds: 0,
     });
     results.push({
