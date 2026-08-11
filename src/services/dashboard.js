@@ -5,9 +5,12 @@ import { db } from '../db.js';
 import {
   claimRefreshJobs,
   completeRefreshJob,
+  DashboardRefreshJobTimeoutError,
+  dashboardRefreshWorkerBatchSize,
   enqueueRefreshJob,
   getRefreshJobStatuses,
   retryableDashboardRefreshError,
+  withDashboardRefreshJobDeadline,
 } from '../jobs.js';
 import { DEFAULT_LLM_MENTION_SOURCES, computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
 import { buildDashboardOverview, buildModule, buildLlmMentionsOverview, composeDashboardOverview } from '../builders/index.js';
@@ -788,7 +791,7 @@ export function refreshableModulesForSite(modules, siteId) {
 }
 
 export async function processRefreshJobs(body = {}) {
-  const limit = Math.max(1, Math.min(Number(body.limit || 5), 10));
+  const limit = dashboardRefreshWorkerBatchSize(body.limit);
   const owner = `dashboard-refresh:${randomUUID()}`;
   const sql = db();
   const lease = await sql`
@@ -806,6 +809,7 @@ export async function processRefreshJobs(body = {}) {
     return ok({ ok: true, claimed: 0, succeeded: 0, retried: 0, failed: 0, skipped: 'heavy_workload_lease_held' });
   }
 
+  let preserveLeaseUntilExpiry = false;
   try {
     const jobs = await claimRefreshJobs(limit);
     const results = [];
@@ -831,20 +835,23 @@ export async function processRefreshJobs(body = {}) {
         const jobParams = job.params || {};
         const bounds = resolveDashboardTimeBounds(job.range_key, jobParams.start || null, jobParams.end || null);
         const seriesGranularity = parseSeriesGranularity(jobParams.seriesGranularity);
-        const payload = await buildDashboardCachePayload(moduleKey, {
-          siteId,
-          rangeKey: bounds.rangeKey,
-          portalScope: job.portal_scope,
-          windowStart: bounds.start,
-          windowEnd: bounds.end,
-          seriesGranularity,
-          params: jobParams,
-        });
-
-        await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
+        const configuredTimeout = Number(process.env.DASHBOARD_REFRESH_JOB_TIMEOUT_MS || 4 * 60 * 1000);
+        await withDashboardRefreshJobDeadline(async () => {
+          const payload = await buildDashboardCachePayload(moduleKey, {
+            siteId,
+            rangeKey: bounds.rangeKey,
+            portalScope: job.portal_scope,
+            windowStart: bounds.start,
+            windowEnd: bounds.end,
+            seriesGranularity,
+            params: jobParams,
+          });
+          await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
+        }, configuredTimeout);
         await completeRefreshJob(job, { ok: true });
         results.push({ jobId: job.id, moduleKey: job.module_key, status: 'succeeded', ok: true });
       } catch (error) {
+        if (error instanceof DashboardRefreshJobTimeoutError) preserveLeaseUntilExpiry = true;
         const message = error instanceof Error ? error.message : String(error);
         const status = await completeRefreshJob(job, {
           ok: false,
@@ -864,10 +871,12 @@ export async function processRefreshJobs(body = {}) {
       results,
     });
   } finally {
-    await sql`
-      DELETE FROM automation_workload_leases
-      WHERE name = 'dashboard-heavy-refresh' AND owner = ${owner}
-    `;
+    if (!preserveLeaseUntilExpiry) {
+      await sql`
+        DELETE FROM automation_workload_leases
+        WHERE name = 'dashboard-heavy-refresh' AND owner = ${owner}
+      `;
+    }
   }
 }
 
