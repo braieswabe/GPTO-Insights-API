@@ -1,7 +1,7 @@
 import { db } from '../db.js';
 import { aggregateTelemetrySeriesByGranularity, boundsFromInput, boundsDaySpan } from '../dashboard-range.js';
 import { trendPercentNumber, formatTrendPercent } from '../lib/scoring.js';
-import { aggregateValidTelemetryTopPages, telemetryPageUrlKey } from '../lib/telemetry-pages.js';
+import { aggregateValidTelemetryTopPages } from '../lib/telemetry-pages.js';
 
 function computeTrend(current, previous) {
   if (!previous) return current > 0 ? 1 : 0;
@@ -93,13 +93,6 @@ export async function buildTelemetry(input) {
     interactions: formatTrendPercent(trend.interactions),
   };
 
-  const candidateUrls = rows.flatMap((row) =>
-    (Array.isArray(row.top_pages) ? row.top_pages : [])
-      .map((page) => page?.url)
-      .filter((url) => typeof url === 'string' && url.length > 0)
-  );
-  const knownNotFoundUrlKeys = await loadKnownNotFoundUrlKeys(sql, siteIds, start, end, candidateUrls);
-
   return {
     range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
     totals,
@@ -110,7 +103,9 @@ export async function buildTelemetry(input) {
     seriesGranularity,
     topPages: aggregateValidTelemetryTopPages(
       rows.flatMap((row) => (Array.isArray(row.top_pages) ? row.top_pages : [])),
-      { knownNotFoundUrlKeys, limit: 10 }
+      // Rollups preserve page titles and explicit not-found metadata, so the
+      // shared filter can reject those entries without rescanning raw events.
+      { limit: 10 }
     ),
     topIntents: mergeCountedJson(rows, 'top_intents', 'intent'),
     llmMentionsSignals: llmSignals,
@@ -132,38 +127,6 @@ function emptyTelemetry(rangeKey, start, end, seriesGranularity = 'day') {
     insufficientData: { message: 'No cached telemetry rollups are available for this range yet.' },
   };
 }
-
-
-async function loadKnownNotFoundUrlKeys(sql, siteIds, start, end, candidateUrls = []) {
-  if (!siteIds.length || !candidateUrls.length) return new Set();
-  const uniqueCandidateUrls = Array.from(new Set(candidateUrls)).slice(0, 500);
-  const rows = await sql`
-    SELECT DISTINCT COALESCE(page->>'url', context->>'url') AS url
-    FROM telemetry_events
-    WHERE site_id = ANY(${siteIds}::uuid[])
-      AND timestamp >= ${start}
-      AND timestamp <= ${end}
-      AND COALESCE(page->>'url', context->>'url') = ANY(${uniqueCandidateUrls}::text[])
-      AND (
-        lower(COALESCE(page->>'isNotFound', '')) = 'true'
-        OR lower(COALESCE(context#>>'{pageQuality,isNotFound}', '')) = 'true'
-        OR lower(COALESCE(context#>>'{coverage,page,isNotFound}', '')) = 'true'
-        OR COALESCE(page->>'title', '') ~* '(page[[:space:]]+not[[:space:]]+found|404|nothing[[:space:]]+found)'
-        OR COALESCE(context->>'title', '') ~* '(page[[:space:]]+not[[:space:]]+found|404|nothing[[:space:]]+found)'
-        OR COALESCE(context#>>'{coverage,page,title}', '') ~* '(page[[:space:]]+not[[:space:]]+found|404|nothing[[:space:]]+found)'
-      )
-      AND COALESCE(page->>'url', context->>'url') IS NOT NULL
-    LIMIT 5000
-  `;
-
-  const keys = new Set();
-  for (const row of rows) {
-    const key = telemetryPageUrlKey(row.url);
-    if (key) keys.add(key);
-  }
-  return keys;
-}
-
 async function loadLlmMentionsSignals(input, sql) {
   if (!input?.siteId) return null;
   try {
