@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { dashboardRefreshPriority, refreshJobSiteIdValue } from '../src/jobs.js';
+import {
+  dashboardRefreshEffectivePriority,
+  dashboardRefreshPriority,
+  refreshJobSiteIdValue,
+} from '../src/jobs.js';
 
 describe('refresh job site ids', () => {
   it('stores all-sites refresh jobs with NULL site_id so the sites FK is not violated', () => {
@@ -19,5 +23,12 @@ describe('dashboard refresh priorities', () => {
     assert.equal(dashboardRefreshPriority('overview'), 10);
     assert.equal(dashboardRefreshPriority('telemetry'), 20);
     assert.equal(dashboardRefreshPriority('authority'), 100);
+  });
+
+  it('promotes legacy overview jobs without promoting retried telemetry work', () => {
+    assert.equal(dashboardRefreshEffectivePriority({ module_key: 'overview', priority: 200, attempts: 0 }), 10);
+    assert.equal(dashboardRefreshEffectivePriority({ module_key: 'telemetry', priority: 100, attempts: 0 }), 20);
+    assert.equal(dashboardRefreshEffectivePriority({ module_key: 'telemetry', priority: 100, attempts: 1 }), 100);
+    assert.equal(dashboardRefreshEffectivePriority({ module_key: 'authority', priority: 80, attempts: 0 }), 80);
   });
 });

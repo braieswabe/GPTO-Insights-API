@@ -35,11 +35,32 @@ export async function readAutomationRuns(request) {
   const sql = dbReader();
   const [refreshRows, dataForSeoRows, scannerRows, enqueueRows] = await Promise.all([
     sql`
-      SELECT id, schedule_key, mode, status, stage, processed_sites, total_sites,
-             cursor, error, created_at, started_at, finished_at, updated_at
-      FROM dashboard_data_refresh_runs
-      WHERE created_at >= now() - (${days}::int * interval '1 day')
-      ORDER BY created_at DESC
+      SELECT r.id, r.schedule_key, r.mode, r.status, r.stage, r.processed_sites, r.total_sites,
+             r.cursor, r.error, r.created_at, r.started_at, r.finished_at, r.updated_at,
+             cache.pending AS cache_jobs_pending,
+             cache.running AS cache_jobs_running,
+             cache.succeeded AS cache_jobs_succeeded,
+             cache.failed AS cache_jobs_failed
+      FROM dashboard_data_refresh_runs r
+      LEFT JOIN LATERAL (
+        SELECT
+          count(*) FILTER (WHERE job.status = 'pending')::int AS pending,
+          count(*) FILTER (WHERE job.status = 'running')::int AS running,
+          count(*) FILTER (WHERE job.status = 'succeeded')::int AS succeeded,
+          count(*) FILTER (WHERE job.status = 'failed')::int AS failed
+        FROM dashboard_refresh_jobs job
+        WHERE job.id IN (
+          SELECT value::uuid
+          FROM jsonb_array_elements_text(
+            CASE
+              WHEN jsonb_typeof(r.cursor->'cacheJobIds') = 'array' THEN r.cursor->'cacheJobIds'
+              ELSE '[]'::jsonb
+            END
+          ) ids(value)
+        )
+      ) cache ON TRUE
+      WHERE r.created_at >= now() - (${days}::int * interval '1 day')
+      ORDER BY r.created_at DESC
       LIMIT ${limit}
     `,
     sql`
@@ -83,6 +104,14 @@ export async function readAutomationRuns(request) {
     const cursor = row.cursor && typeof row.cursor === 'object' ? row.cursor : {};
     const failures = Array.isArray(cursor.failures) ? cursor.failures : [];
     const cacheJobIds = Array.isArray(cursor.cacheJobIds) ? cursor.cacheJobIds : [];
+    const hasCacheJobs = cacheJobIds.length > 0;
+    const cachePending = Number(row.cache_jobs_pending || 0);
+    const cacheRunning = Number(row.cache_jobs_running || 0);
+    const cacheSucceeded = Number(row.cache_jobs_succeeded || 0);
+    const cacheFailed = Number(row.cache_jobs_failed || 0);
+    const reportedFailures = hasCacheJobs
+      ? Math.max(cacheFailed, failures.length)
+      : failures.length || (row.status === 'failed' ? Math.max(1, Number(row.total_sites || 0) - Number(row.processed_sites || 0)) : 0);
     return {
       id: row.id,
       type: 'dashboard_refresh',
@@ -95,14 +124,18 @@ export async function readAutomationRuns(request) {
       siteId: null,
       siteDomain: null,
       totals: {
-        total: Number(row.total_sites || 0),
-        succeeded: Number(row.processed_sites || 0),
-        failed: failures.length || (row.status === 'failed' ? Math.max(1, Number(row.total_sites || 0) - Number(row.processed_sites || 0)) : 0),
+        total: hasCacheJobs ? cacheJobIds.length : Number(row.total_sites || 0),
+        succeeded: hasCacheJobs ? cacheSucceeded : Number(row.processed_sites || 0),
+        failed: reportedFailures,
       },
       stageTotals: {
         sites: Number(row.total_sites || 0),
         sitesProcessed: Number(row.processed_sites || 0),
         cacheJobs: cacheJobIds.length,
+        cacheJobsPending: cachePending,
+        cacheJobsRunning: cacheRunning,
+        cacheJobsSucceeded: cacheSucceeded,
+        cacheJobsFailed: cacheFailed,
         failures: failures.length,
       },
       failures,

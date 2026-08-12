@@ -23,6 +23,8 @@ describe('automation run history', () => {
         return [{
           id: 'refresh-1', schedule_key: '2026-08-02T11', mode: 'hourly', status: 'completed',
           stage: 'completed', processed_sites: 3, total_sites: 3, error: null,
+          cursor: { cacheJobIds: ['cache-1', 'cache-2', 'cache-3'] },
+          cache_jobs_pending: 0, cache_jobs_running: 0, cache_jobs_succeeded: 2, cache_jobs_failed: 1,
           created_at: new Date('2026-08-02T11:00:00Z'), started_at: new Date('2026-08-02T11:00:01Z'),
           finished_at: new Date('2026-08-02T11:01:00Z'), updated_at: new Date('2026-08-02T11:01:00Z'),
         }];
@@ -68,6 +70,8 @@ describe('automation run history', () => {
     assert.equal(result.body.data.runs[2].siteDomain, 'crst.com');
     assert.equal(result.body.data.runs[3].enqueueStatus, 'automation_disabled');
     assert.equal(result.body.data.runs[3].failureCode, 'automation_disabled');
+    assert.deepEqual(result.body.data.runs[0].totals, { total: 3, succeeded: 2, failed: 1 });
+    assert.equal(result.body.data.runs[0].stageTotals.cacheJobsSucceeded, 2);
   });
 
   it('rejects non-admin users', async () => {

@@ -33,6 +33,17 @@ export function dashboardRefreshPriority(moduleKey) {
   return 100;
 }
 
+export function dashboardRefreshEffectivePriority(job) {
+  const storedPriority = Number.isFinite(Number(job?.priority)) ? Number(job.priority) : 100;
+  if (job?.module_key === 'overview') return Math.min(storedPriority, 10);
+  // Give new telemetry work an early slot because overview consumes it, but do
+  // not let a repeatedly timing-out telemetry job starve the rest of the queue.
+  if (job?.module_key === 'telemetry' && Number(job?.attempts || 0) === 0) {
+    return Math.min(storedPriority, 20);
+  }
+  return storedPriority;
+}
+
 export async function enqueueRefreshJob(identity, options = {}) {
   const sql = db();
   const cooldownSeconds = options.cooldownSeconds ?? refreshCooldownSeconds();
@@ -170,8 +181,12 @@ export async function claimRefreshJobs(limit = 1) {
         AND attempts < ${MAX_REFRESH_ATTEMPTS}
         AND next_attempt_at <= now()
       ORDER BY
+        CASE
+          WHEN module_key = 'overview' THEN LEAST(priority, 10)
+          WHEN module_key = 'telemetry' AND attempts = 0 THEN LEAST(priority, 20)
+          ELSE priority
+        END ASC,
         CASE WHEN attempts = 0 THEN 0 ELSE 1 END ASC,
-        priority ASC,
         requested_at ASC
       LIMIT ${dashboardRefreshWorkerBatchSize(limit)}
       FOR UPDATE SKIP LOCKED
