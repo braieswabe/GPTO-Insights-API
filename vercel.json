@@ -47,6 +47,10 @@
     {
       "path": "/internal/cron/dataforseo-worker",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/internal/cron/dashboard-refresh-worker",
+      "schedule": "* * * * *"
     }
   ]
 }
