@@ -4,6 +4,7 @@ import {
   DashboardRefreshJobTimeoutError,
   dashboardRefreshRetryDelaySeconds,
   dashboardRefreshWorkerBatchSize,
+  isIsolatedDashboardRefreshJob,
   retryableDashboardRefreshError,
   shouldRetryDashboardRefreshJob,
   withDashboardRefreshJobDeadline,
@@ -24,10 +25,18 @@ describe('dashboard refresh job reliability', () => {
     assert.equal(retryableDashboardRefreshError({ statusCode: 401 }), false);
   });
 
-  it('claims one expensive dashboard cache job per invocation', () => {
-    assert.equal(dashboardRefreshWorkerBatchSize(), 1);
-    assert.equal(dashboardRefreshWorkerBatchSize(3), 1);
-    assert.equal(dashboardRefreshWorkerBatchSize(10), 1);
+  it('adaptively batches at most three dashboard cache jobs per invocation', () => {
+    assert.equal(dashboardRefreshWorkerBatchSize(), 3);
+    assert.equal(dashboardRefreshWorkerBatchSize(2), 2);
+    assert.equal(dashboardRefreshWorkerBatchSize(10), 3);
+    assert.equal(dashboardRefreshWorkerBatchSize(0), 1);
+  });
+
+  it('isolates timeout-prone 30-day modules from fast batches', () => {
+    assert.equal(isIsolatedDashboardRefreshJob({ module_key: 'telemetry', range_key: '30d' }), true);
+    assert.equal(isIsolatedDashboardRefreshJob({ module_key: 'executive_summary', range_key: '30d' }), true);
+    assert.equal(isIsolatedDashboardRefreshJob({ module_key: 'telemetry', range_key: '7d' }), false);
+    assert.equal(isIsolatedDashboardRefreshJob({ module_key: 'overview', range_key: '30d' }), false);
   });
 
   it('never retries beyond the third execution attempt', () => {

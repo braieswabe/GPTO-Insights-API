@@ -16,7 +16,7 @@ export default async function handler(req, res) {
   }
   try {
     const result = await processRefreshJobs({
-      limit: Number(process.env.DASHBOARD_REFRESH_WORKER_BATCH_SIZE || 1),
+      limit: Number(process.env.DASHBOARD_REFRESH_WORKER_BATCH_SIZE || 3),
     });
     res.writeHead(result.status, { 'content-type': 'application/json' });
     res.end(JSON.stringify(result.body));

@@ -10,6 +10,7 @@ import {
   dashboardRefreshWorkerBatchSize,
   enqueueRefreshJob,
   getRefreshJobStatuses,
+  isIsolatedDashboardRefreshJob,
   retryableDashboardRefreshError,
   withDashboardRefreshJobDeadline,
 } from '../jobs.js';
@@ -793,6 +794,9 @@ export function refreshableModulesForSite(modules, siteId) {
 
 export async function processRefreshJobs(body = {}) {
   const limit = dashboardRefreshWorkerBatchSize(body.limit);
+  const workerStartedAt = Date.now();
+  const configuredWorkerBudget = Number(process.env.DASHBOARD_REFRESH_WORKER_BUDGET_MS || 270_000);
+  const workerBudgetMs = Math.max(30_000, Math.min(270_000, configuredWorkerBudget || 270_000));
   const owner = `dashboard-refresh:${randomUUID()}`;
   const sql = db();
   const lease = await sql`
@@ -812,10 +816,18 @@ export async function processRefreshJobs(body = {}) {
 
   let preserveLeaseUntilExpiry = false;
   try {
-    const jobs = await claimRefreshJobs(limit);
     const results = [];
 
-    for (const job of jobs) {
+    for (let slot = 0; slot < limit; slot += 1) {
+      const remainingBeforeClaim = workerBudgetMs - (Date.now() - workerStartedAt);
+      if (remainingBeforeClaim < 5_000) break;
+
+      // Claim just one job at a time. After the first fast job, exclude known
+      // long-running modules so no claimed work is abandoned near the function deadline.
+      const [job] = await claimRefreshJobs(1, { excludeIsolated: results.length > 0 });
+      if (!job) break;
+
+      let timedOut = false;
       try {
         const moduleKey = normalizeDashboardModuleKey(job.module_key);
         if (!DASHBOARD_REFRESH_MODULES.includes(moduleKey)) {
@@ -837,6 +849,7 @@ export async function processRefreshJobs(body = {}) {
         const bounds = resolveDashboardTimeBounds(job.range_key, jobParams.start || null, jobParams.end || null);
         const seriesGranularity = parseSeriesGranularity(jobParams.seriesGranularity);
         const configuredTimeout = Number(process.env.DASHBOARD_REFRESH_JOB_TIMEOUT_MS || 4 * 60 * 1000);
+        const remainingJobBudget = workerBudgetMs - (Date.now() - workerStartedAt);
         await withDashboardRefreshJobDeadline(async () => {
           const payload = await buildDashboardCachePayload(moduleKey, {
             siteId,
@@ -848,11 +861,14 @@ export async function processRefreshJobs(body = {}) {
             params: jobParams,
           });
           await upsertCacheRow(identity, payload, { ttlSeconds: ttlForModule(moduleKey) });
-        }, configuredTimeout);
+        }, Math.min(configuredTimeout, Math.max(5_000, remainingJobBudget)));
         await completeRefreshJob(job, { ok: true });
         results.push({ jobId: job.id, moduleKey: job.module_key, status: 'succeeded', ok: true });
       } catch (error) {
-        if (error instanceof DashboardRefreshJobTimeoutError) preserveLeaseUntilExpiry = true;
+        if (error instanceof DashboardRefreshJobTimeoutError) {
+          preserveLeaseUntilExpiry = true;
+          timedOut = true;
+        }
         const message = error instanceof Error ? error.message : String(error);
         const status = await completeRefreshJob(job, {
           ok: false,
@@ -861,11 +877,13 @@ export async function processRefreshJobs(body = {}) {
         });
         results.push({ jobId: job.id, moduleKey: job.module_key, status, ok: false, error: message });
       }
+
+      if (timedOut || isIsolatedDashboardRefreshJob(job)) break;
     }
 
     return ok({
       ok: true,
-      claimed: jobs.length,
+      claimed: results.length,
       succeeded: results.filter((result) => result.status === 'succeeded').length,
       retried: results.filter((result) => result.status === 'pending').length,
       failed: results.filter((result) => result.status === 'failed').length,

@@ -113,10 +113,14 @@ export async function enqueueRefreshJob(identity, options = {}) {
   return { queued: false, reason: 'active_job_exists', jobId: deduplicated?.id || null };
 }
 
-export function dashboardRefreshWorkerBatchSize() {
-  // Dashboard modules can each take several minutes. Claiming exactly one keeps
-  // later jobs from being abandoned when an earlier module consumes the Vercel budget.
-  return 1;
+export function dashboardRefreshWorkerBatchSize(limit = 3) {
+  const parsed = Number(limit);
+  return Math.max(1, Math.min(3, Number.isFinite(parsed) ? Math.floor(parsed) : 3));
+}
+
+export function isIsolatedDashboardRefreshJob(job) {
+  return job?.range_key === '30d'
+    && ['telemetry', 'executive_summary'].includes(job?.module_key);
 }
 
 export function shouldRetryDashboardRefreshJob(error, attempts) {
@@ -161,9 +165,10 @@ export async function failExhaustedRefreshJobs() {
   return rows.length;
 }
 
-export async function claimRefreshJobs(limit = 1) {
+export async function claimRefreshJobs(limit = 1, options = {}) {
   const sql = db();
   const workerId = `${os.hostname()}:${process.pid}`;
+  const excludeIsolated = options.excludeIsolated === true;
   await failExhaustedRefreshJobs();
   await sql`
     UPDATE dashboard_refresh_jobs
@@ -180,6 +185,10 @@ export async function claimRefreshJobs(limit = 1) {
       WHERE status = 'pending'
         AND attempts < ${MAX_REFRESH_ATTEMPTS}
         AND next_attempt_at <= now()
+        AND (
+          ${excludeIsolated}::boolean = false
+          OR NOT (range_key = '30d' AND module_key IN ('telemetry', 'executive_summary'))
+        )
       ORDER BY
         CASE
           WHEN module_key = 'overview' THEN LEAST(priority, 10)
