@@ -77,16 +77,28 @@ function referencesFromExperience(experience, limit = 2) {
 
 export async function buildExecutiveSummary(input, extras = {}) {
   const llmMentions = extras?.llmMentions ?? null;
-  const [telemetry, authority, experience, searchDiagnostics, confusion, coverage, schema, journey] = await Promise.all([
-    buildTelemetry(input),
-    buildAuthority(input),
-    buildExperience(input),
-    buildSearchDiagnostics(input),
-    buildConfusion(input),
-    buildCoverage(input),
-    buildSchema(input),
-    buildJourney(input),
-  ]);
+  const cachedModules = extras?.modules || null;
+  const [telemetry, authority, experience, searchDiagnostics, confusion, coverage, schema, journey] = cachedModules
+    ? [
+        cachedModules.telemetry,
+        cachedModules.authority,
+        cachedModules.experience,
+        cachedModules.search_diagnostics,
+        cachedModules.confusion,
+        cachedModules.coverage,
+        cachedModules.schema,
+        cachedModules.journey,
+      ]
+    : await Promise.all([
+        buildTelemetry(input),
+        buildAuthority(input),
+        buildExperience(input),
+        buildSearchDiagnostics(input),
+        buildConfusion(input),
+        buildCoverage(input),
+        buildSchema(input),
+        buildJourney(input),
+      ]);
 
   const llmSignals = telemetry?.llmMentionsSignals || null;
   const aiComposite = llmSignals?.composite ?? null;

@@ -16,6 +16,7 @@ import {
 } from '../jobs.js';
 import { DEFAULT_LLM_MENTION_SOURCES, computedFreshness, missingFreshness, ok, responseEnvelope } from '../contracts.js';
 import { buildDashboardOverview, buildModule, buildLlmMentionsOverview, composeDashboardOverview } from '../builders/index.js';
+import { buildExecutiveSummary } from '../builders/executive-summary.js';
 import { buildDashboardStats, buildGoldDashboard } from '../builders/gold.js';
 import { buildCsuite, buildMonthlyInsights } from '../builders/csuite.js';
 import { buildSiteConfig } from '../builders/sites.js';
@@ -335,6 +336,7 @@ async function buildExportData(context) {
 async function buildDashboardCachePayload(moduleKey, context) {
   const normalized = normalizeDashboardModuleKey(moduleKey);
   if (normalized === 'overview') return buildDashboardOverviewFromCachedModules(context);
+  if (normalized === 'executive_summary') return buildExecutiveSummaryFromCachedModules(context);
   if (normalized === 'gold') return buildGoldDashboard(context);
   if (normalized === 'stats') return buildDashboardStats(context);
   if (normalized === 'export_data') return buildExportData(context);
@@ -354,6 +356,22 @@ async function buildDashboardCachePayload(moduleKey, context) {
     });
   }
   return buildModule(normalized, context);
+}
+
+async function buildExecutiveSummaryFromCachedModules(context) {
+  const moduleKeys = [
+    'telemetry', 'authority', 'experience', 'search_diagnostics',
+    'confusion', 'coverage', 'schema', 'journey',
+  ];
+  const rows = await Promise.all(moduleKeys.map((moduleKey) => getCacheRow(cacheIdentity({
+    ...context,
+    moduleKey,
+    params: context.params,
+  }))));
+  if (rows.some((row) => !row?.payload)) return buildExecutiveSummary(context);
+  return buildExecutiveSummary(context, {
+    modules: Object.fromEntries(moduleKeys.map((moduleKey, index) => [moduleKey, rows[index].payload])),
+  });
 }
 
 export function composeDashboardOverviewFromModulePayloads(sitesList, payloads) {

@@ -1,7 +1,7 @@
 import { db } from '../db.js';
 import { aggregateTelemetrySeriesByGranularity, boundsFromInput, boundsDaySpan } from '../dashboard-range.js';
 import { trendPercentNumber, formatTrendPercent } from '../lib/scoring.js';
-import { aggregateValidTelemetryTopPages, isNotFoundTelemetryPage, telemetryPageUrlKey } from '../lib/telemetry-pages.js';
+import { aggregateValidTelemetryTopPages, telemetryPageUrlKey } from '../lib/telemetry-pages.js';
 
 function computeTrend(current, previous) {
   if (!previous) return current > 0 ? 1 : 0;
@@ -36,7 +36,7 @@ export async function buildTelemetry(input) {
     return emptyTelemetry(rangeKey, start, end, seriesGranularity);
   }
 
-  const [rows, llmSignals, knownNotFoundUrlKeys] = await Promise.all([
+  const [rows, llmSignals] = await Promise.all([
     sql`
       SELECT day, visits, page_views, searches, interactions, top_pages, top_intents
       FROM dashboard_rollups_daily
@@ -46,7 +46,6 @@ export async function buildTelemetry(input) {
       ORDER BY day ASC
     `,
     siteId ? loadLlmMentionsSignals(input, sql) : Promise.resolve(null),
-    loadKnownNotFoundUrlKeys(sql, siteIds, start, end),
   ]);
 
   if (rows.length === 0) {
@@ -94,6 +93,13 @@ export async function buildTelemetry(input) {
     interactions: formatTrendPercent(trend.interactions),
   };
 
+  const candidateUrls = rows.flatMap((row) =>
+    (Array.isArray(row.top_pages) ? row.top_pages : [])
+      .map((page) => page?.url)
+      .filter((url) => typeof url === 'string' && url.length > 0)
+  );
+  const knownNotFoundUrlKeys = await loadKnownNotFoundUrlKeys(sql, siteIds, start, end, candidateUrls);
+
   return {
     range: { start: start.toISOString(), end: end.toISOString(), range: rangeKey },
     totals,
@@ -128,23 +134,31 @@ function emptyTelemetry(rangeKey, start, end, seriesGranularity = 'day') {
 }
 
 
-async function loadKnownNotFoundUrlKeys(sql, siteIds, start, end) {
-  if (!siteIds.length) return new Set();
+async function loadKnownNotFoundUrlKeys(sql, siteIds, start, end, candidateUrls = []) {
+  if (!siteIds.length || !candidateUrls.length) return new Set();
+  const uniqueCandidateUrls = Array.from(new Set(candidateUrls)).slice(0, 500);
   const rows = await sql`
-    SELECT page, context
+    SELECT DISTINCT COALESCE(page->>'url', context->>'url') AS url
     FROM telemetry_events
     WHERE site_id = ANY(${siteIds}::uuid[])
       AND timestamp >= ${start}
       AND timestamp <= ${end}
+      AND COALESCE(page->>'url', context->>'url') = ANY(${uniqueCandidateUrls}::text[])
+      AND (
+        lower(COALESCE(page->>'isNotFound', '')) = 'true'
+        OR lower(COALESCE(context#>>'{pageQuality,isNotFound}', '')) = 'true'
+        OR lower(COALESCE(context#>>'{coverage,page,isNotFound}', '')) = 'true'
+        OR COALESCE(page->>'title', '') ~* '(page[[:space:]]+not[[:space:]]+found|404|nothing[[:space:]]+found)'
+        OR COALESCE(context->>'title', '') ~* '(page[[:space:]]+not[[:space:]]+found|404|nothing[[:space:]]+found)'
+        OR COALESCE(context#>>'{coverage,page,title}', '') ~* '(page[[:space:]]+not[[:space:]]+found|404|nothing[[:space:]]+found)'
+      )
+      AND COALESCE(page->>'url', context->>'url') IS NOT NULL
+    LIMIT 5000
   `;
 
   const keys = new Set();
   for (const row of rows) {
-    const context = row.context && typeof row.context === 'object' && !Array.isArray(row.context) ? row.context : {};
-    const page = row.page && typeof row.page === 'object' && !Array.isArray(row.page) ? row.page : {};
-    const url = page.url || context.url;
-    if (!isNotFoundTelemetryPage({ ...page, url }, context)) continue;
-    const key = telemetryPageUrlKey(url);
+    const key = telemetryPageUrlKey(row.url);
     if (key) keys.add(key);
   }
   return keys;

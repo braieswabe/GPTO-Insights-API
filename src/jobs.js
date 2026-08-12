@@ -35,6 +35,7 @@ export function dashboardRefreshPriority(moduleKey) {
 
 export function dashboardRefreshEffectivePriority(job) {
   const storedPriority = Number.isFinite(Number(job?.priority)) ? Number(job.priority) : 100;
+  if (isIsolatedDashboardRefreshJob(job)) return Math.max(storedPriority, 1000);
   if (job?.module_key === 'overview') return Math.min(storedPriority, 10);
   // Give new telemetry work an early slot because overview consumes it, but do
   // not let a repeatedly timing-out telemetry job starve the rest of the queue.
@@ -191,6 +192,8 @@ export async function claimRefreshJobs(limit = 1, options = {}) {
         )
       ORDER BY
         CASE
+          WHEN range_key = '30d' AND module_key IN ('telemetry', 'executive_summary')
+            THEN GREATEST(priority, 1000)
           WHEN module_key = 'overview' THEN LEAST(priority, 10)
           WHEN module_key = 'telemetry' AND attempts = 0 THEN LEAST(priority, 20)
           ELSE priority

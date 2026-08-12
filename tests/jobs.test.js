@@ -29,6 +29,8 @@ describe('dashboard refresh priorities', () => {
     assert.equal(dashboardRefreshEffectivePriority({ module_key: 'overview', priority: 200, attempts: 0 }), 10);
     assert.equal(dashboardRefreshEffectivePriority({ module_key: 'telemetry', priority: 100, attempts: 0 }), 20);
     assert.equal(dashboardRefreshEffectivePriority({ module_key: 'telemetry', priority: 100, attempts: 1 }), 100);
+    assert.equal(dashboardRefreshEffectivePriority({ module_key: 'telemetry', range_key: '30d', priority: 20, attempts: 0 }), 1000);
+    assert.equal(dashboardRefreshEffectivePriority({ module_key: 'executive_summary', range_key: '30d', priority: 100, attempts: 0 }), 1000);
     assert.equal(dashboardRefreshEffectivePriority({ module_key: 'authority', priority: 80, attempts: 0 }), 80);
   });
 });
