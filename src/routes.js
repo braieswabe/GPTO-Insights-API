@@ -57,13 +57,6 @@ import {
   runDataForSeoAutomationWorker,
 } from './services/dataforseo-automation.js';
 import { readAutomationRuns } from './services/automation-runs.js';
-import {
-  enqueueManualLlmResponses,
-  enqueueScheduledLlmResponses,
-  getLlmResponsesBatch,
-  processLlmResponsesJobs,
-  retryLlmResponsesBatch,
-} from './services/llm-responses-automation.js';
 
 function requireAuthOrThrow(request) {
   const auth = requireInternalAuth(request);
@@ -101,9 +94,7 @@ export async function route(request) {
   if (url.pathname.startsWith('/internal/') || url.pathname.startsWith('/v1/')) {
     const isWorkerCron = url.pathname === '/internal/cron/dataforseo-enqueue'
       || url.pathname === '/internal/cron/dataforseo-worker'
-      || url.pathname === '/internal/cron/dashboard-refresh-worker'
-      || url.pathname === '/internal/cron/llm-responses-enqueue'
-      || url.pathname === '/internal/cron/llm-responses-worker';
+      || url.pathname === '/internal/cron/dashboard-refresh-worker';
     if (isWorkerCron) requireCronOrInternalAuth(request);
     else requireAuthOrThrow(request);
   }
@@ -173,23 +164,6 @@ export async function route(request) {
   }
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/dataforseo-worker') {
     return { status: 200, body: await runDataForSeoAutomationWorker() };
-  }
-  if (method === 'POST' && url.pathname === '/internal/llm-responses/runs') {
-    return { status: 202, body: await enqueueManualLlmResponses(await readJson(request)) };
-  }
-  const llmResponsesRunMatch = url.pathname.match(/^\/internal\/llm-responses\/runs\/([^/]+)$/);
-  if (method === 'GET' && llmResponsesRunMatch) {
-    return { status: 200, body: await getLlmResponsesBatch(llmResponsesRunMatch[1]) };
-  }
-  const llmResponsesRetryMatch = url.pathname.match(/^\/internal\/llm-responses\/runs\/([^/]+)\/retry$/);
-  if (method === 'POST' && llmResponsesRetryMatch) {
-    return { status: 200, body: await retryLlmResponsesBatch(llmResponsesRetryMatch[1]) };
-  }
-  if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/llm-responses-enqueue') {
-    return { status: 200, body: await enqueueScheduledLlmResponses() };
-  }
-  if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/llm-responses-worker') {
-    return { status: 200, body: await processLlmResponsesJobs(Number(process.env.LLM_RESPONSES_WORKER_BATCH_SIZE || 1)) };
   }
   if ((method === 'GET' || method === 'POST') && url.pathname === '/internal/cron/dashboard-refresh-worker') {
     return processRefreshJobs({ limit: Number(process.env.DASHBOARD_REFRESH_WORKER_BATCH_SIZE || 3) });

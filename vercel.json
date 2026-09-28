@@ -29,12 +29,6 @@
     },
     "api/internal/cron/dashboard-refresh-worker.js": {
       "maxDuration": 300
-    },
-    "api/internal/cron/llm-responses-enqueue.js": {
-      "maxDuration": 60
-    },
-    "api/internal/cron/llm-responses-worker.js": {
-      "maxDuration": 300
     }
   },
   "crons": [
@@ -57,14 +51,6 @@
     {
       "path": "/internal/cron/dashboard-refresh-worker",
       "schedule": "*/1 * * * *"
-    },
-    {
-      "path": "/internal/cron/llm-responses-enqueue",
-      "schedule": "40 20 * * *"
-    },
-    {
-      "path": "/internal/cron/llm-responses-worker",
-      "schedule": "* * * * *"
     }
   ]
 }
